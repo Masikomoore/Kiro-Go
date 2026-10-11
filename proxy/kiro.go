@@ -593,6 +593,22 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 		}
 	}
 	callback = &trackedCallback
+	rewriter := newOutputRewriter(outputRewriteRulesFn())
+	rewriteFlushed := false
+	flushRewrite := func() {
+		if rewriteFlushed || callback.OnText == nil {
+			rewriteFlushed = true
+			return
+		}
+		rewriteFlushed = true
+		for _, thinking := range []bool{false, true} {
+			if text := rewriter.flush(thinking); text != "" {
+				emitted = true
+				callback.OnText(text, thinking)
+			}
+		}
+	}
+	defer flushRewrite()
 
 	for {
 		// Prelude: total length, headers length, and prelude CRC.
@@ -654,16 +670,20 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 				sawOutput = true
 				sawAnswer = true
 				if callback.OnText != nil {
-					emitted = true
-					callback.OnText(content, false)
+					if text := rewriter.push(content, false); text != "" {
+						emitted = true
+						callback.OnText(text, false)
+					}
 				}
 			}
 		case "reasoningContentEvent":
 			if text, ok := event["text"].(string); ok && text != "" {
 				sawOutput = true
 				if callback.OnText != nil {
-					emitted = true
-					callback.OnText(text, true)
+					if rewritten := rewriter.push(text, true); rewritten != "" {
+						emitted = true
+						callback.OnText(rewritten, true)
+					}
 				}
 			}
 		case "toolUseEvent":
@@ -714,6 +734,9 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 			callback.OnContextUsage(percentage)
 		}
 	}
+	// Release a brand token that was still split at EOF before completion,
+	// so the client sees it before message_stop.
+	flushRewrite()
 	if callback.OnComplete != nil {
 		callback.OnComplete(inputTokens, outputTokens)
 	}
