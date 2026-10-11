@@ -578,11 +578,15 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 	var totalCredits float64
 	var contextUsagePercentages []float64
 	var sawOutput bool
+	var sawAnswer bool
+	var sawMetering bool
+	var sawStop bool
 	pending := &pendingToolUses{}
 	trackedCallback := *callback
 	originalOnToolUse := trackedCallback.OnToolUse
 	trackedCallback.OnToolUse = func(toolUse KiroToolUse) {
 		sawOutput = true
+		sawAnswer = true
 		if originalOnToolUse != nil {
 			emitted = true
 			originalOnToolUse(toolUse)
@@ -648,6 +652,7 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 		case "assistantResponseEvent":
 			if content, ok := event["content"].(string); ok && content != "" {
 				sawOutput = true
+				sawAnswer = true
 				if callback.OnText != nil {
 					emitted = true
 					callback.OnText(content, false)
@@ -666,6 +671,9 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 				return emitted, toolErr
 			}
 		case "meteringEvent":
+			// Billing is emitted only after the turn finishes. IdC and Enterprise
+			// profiles end here and never send metadataEvent.
+			sawMetering = true
 			if usage, ok := event["usage"].(float64); ok {
 				totalCredits += usage
 			}
@@ -677,8 +685,11 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 			// stopReason rides inside metadataEvent on the wire; there is no
 			// standalone stop reason event type. Its absence after content is
 			// how callers detect a truncated stream.
-			if reason := firstStringField(event, "stopReason", "stop_reason"); reason != "" && callback.OnStopReason != nil {
-				callback.OnStopReason(reason)
+			if reason := firstStringField(event, "stopReason", "stop_reason"); reason != "" {
+				sawStop = true
+				if callback.OnStopReason != nil {
+					callback.OnStopReason(reason)
+				}
 			}
 		}
 	}
@@ -689,6 +700,11 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 	}
 	if !sawOutput {
 		return emitted, errEmptyKiroStream
+	}
+	// contextUsageEvent is not a terminal signal: it can arrive before the
+	// answer finishes. A mid-frame death returns above and never reaches here.
+	if !sawStop && sawAnswer && sawMetering && callback.OnStopReason != nil {
+		callback.OnStopReason("end_turn")
 	}
 	if callback.OnCredits != nil && totalCredits > 0 {
 		callback.OnCredits(totalCredits)

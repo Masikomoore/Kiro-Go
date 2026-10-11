@@ -90,6 +90,89 @@ func TestClaudeStreamEmitsErrorOnTruncatedStream(t *testing.T) {
 	}
 }
 
+func postClaudeHello(t *testing.T, h *Handler) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"claude-sonnet-4.5",
+		"max_tokens":100,
+		"messages":[{"role":"user","content":"hello"}],
+		"stream":true
+	}`))
+	rec := httptest.NewRecorder()
+	h.handleClaudeMessages(rec, req)
+	return rec.Body.String()
+}
+
+// A clean EOF after meteringEvent is a finished turn on IdC/Enterprise
+// profiles, which never send metadataEvent. The client must see message_stop.
+func TestClaudeStreamCompletesOnMeteringWithoutMetadata(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{
+			"content": strings.Repeat("partial answer ", 8),
+		}))
+		_, _ = w.Write(awsEventStreamFrame(t, "contextUsageEvent", map[string]interface{}{
+			"contextUsagePercentage": 0.41,
+		}))
+		_, _ = w.Write(awsEventStreamFrame(t, "meteringEvent", map[string]interface{}{
+			"unit": "credit", "unitPlural": "credits", "usage": 0.02,
+		}))
+	}))
+	defer server.Close()
+	h := setupIntegrityPathTest(t, server)
+
+	body := postClaudeHello(t, h)
+	if !strings.Contains(body, "partial answer") {
+		t.Fatalf("expected flushed content, got %s", body)
+	}
+	if !strings.Contains(body, `"stop_reason":"end_turn"`) {
+		t.Fatalf("metered stream must finish as end_turn, got %s", body)
+	}
+	if !strings.Contains(body, "event: message_stop") {
+		t.Fatalf("expected message_stop, got %s", body)
+	}
+	if strings.Contains(body, `"type":"error"`) {
+		t.Fatalf("metered stream must not error, got %s", body)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("finished turn must not be retried, hits=%d", hits.Load())
+	}
+}
+
+// contextUsageEvent alone is not completion. A stream that dies after it
+// still has to surface the truncation error.
+func TestClaudeStreamRejectsContextUsageWithoutMetering(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{
+			"content": strings.Repeat("partial answer ", 8),
+		}))
+		_, _ = w.Write(awsEventStreamFrame(t, "contextUsageEvent", map[string]interface{}{
+			"contextUsagePercentage": 0.41,
+		}))
+	}))
+	defer server.Close()
+	h := setupIntegrityPathTest(t, server)
+
+	body := postClaudeHello(t, h)
+	if !strings.Contains(body, "partial answer") {
+		t.Fatalf("expected flushed content, got %s", body)
+	}
+	if strings.Contains(body, `"stop_reason":"end_turn"`) {
+		t.Fatalf("context usage alone must not be reported as end_turn, got %s", body)
+	}
+	if !strings.Contains(body, `"type":"error"`) {
+		t.Fatalf("expected SSE error event, got %s", body)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("must not retry after client flush, hits=%d", hits.Load())
+	}
+}
+
 // Non-stream buffers everything, so a truncated first attempt is safe to retry
 // on the same account. The client must receive the recovered answer only.
 func TestClaudeNonStreamRetriesTruncatedStream(t *testing.T) {
