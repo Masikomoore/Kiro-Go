@@ -274,6 +274,9 @@ type KiroStreamCallback struct {
 	OnCredits      func(credits float64)
 	OnContextUsage func(percentage float64)
 	OnStopReason   func(reason string)
+	// OnResponseBody runs once, on the first upstream payload byte. It is the
+	// signal that this attempt now owns the downstream response.
+	OnResponseBody func()
 }
 
 // ==================== API Call ====================
@@ -491,7 +494,11 @@ endpointLoop:
 				continue endpointLoop
 			}
 
-			emitted, err := parseEventStreamTracked(resp.Body, callback)
+			body := io.Reader(resp.Body)
+			if callback != nil && callback.OnResponseBody != nil {
+				body = &firstByteReader{r: resp.Body, notify: callback.OnResponseBody}
+			}
+			emitted, err := parseEventStreamTracked(body, callback)
 			resp.Body.Close()
 			if err == nil {
 				return nil
