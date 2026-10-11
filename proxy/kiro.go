@@ -32,6 +32,9 @@ const (
 	streamRetryBackoff           = 700 * time.Millisecond
 	maxStreamAttemptsPerEndpoint = 2
 	maxEventStreamMessageSize    = 16 * 1024 * 1024
+	// streamClientTimeout is the total deadline for one Kiro stream, from
+	// dial through the last response byte. It is not an idle timeout.
+	streamClientTimeout = 10 * time.Minute
 )
 
 var (
@@ -102,7 +105,7 @@ func GetClientForProxy(proxyURL string) *http.Client {
 		return cached.(*http.Client)
 	}
 	client := &http.Client{
-		Timeout:   5 * time.Minute,
+		Timeout:   streamClientTimeout,
 		Transport: buildKiroTransport(proxyURL),
 	}
 	proxyClientCache.Store(proxyURL, client)
@@ -160,7 +163,7 @@ func buildKiroTransport(proxyURL string) *http.Transport {
 // InitKiroHttpClient initializes (or reinitializes) the HTTP clients used for Kiro API requests.
 func InitKiroHttpClient(proxyURL string) {
 	client := &http.Client{
-		Timeout:   5 * time.Minute,
+		Timeout:   streamClientTimeout,
 		Transport: buildKiroTransport(proxyURL),
 	}
 	kiroHttpStore.Store(client)
