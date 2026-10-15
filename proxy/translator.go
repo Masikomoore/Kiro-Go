@@ -331,35 +331,47 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 		history = append(priming, history...)
 	}
 
-	// Keep structured tool results only while they answer the final assistant
-	// tool turn. Older tool cycles are flattened by sanitizeKiroHistory because
-	// Kiro rejects structured tool calls and results in history.
+	// By default structured tool results are kept only while they answer the
+	// final assistant tool turn, and older tool cycles are flattened to text.
+	// compat.structuredToolHistory keeps every paired cycle structured instead.
 	capToolResultTexts(currentToolResults)
-	currentToolResultIDs := collectToolResultIDs(currentToolResults)
-	keepCurrentToolResults := currentToolResultsMatchLastAssistant(history, currentToolResultIDs)
-
-	if keepCurrentToolResults {
-		history = sanitizeKiroHistory(history, currentToolResultIDs)
-	} else {
-		history = sanitizeKiroHistory(history, nil)
-	}
+	historyToolNames := make(map[string]string)
+	history, attachToolResults, narratedToolResults := prepareToolHistory(history, currentToolResults, func(name string) string {
+		mapped := shortenToolName(sanitizeToolName(name))
+		if mapped != name {
+			historyToolNames[mapped] = name
+		}
+		return mapped
+	})
 
 	// 构建最终内容。工具结果既保留结构化配对，也携带可读文本；
 	// 同一消息带有图片时，图片占位文本不能覆盖工具结果内容。
 	finalContent := currentContent
-	if len(currentToolResults) > 0 {
-		finalContent = joinHistoryText(finalContent, buildToolResultsContinuation(currentToolResults))
+	if len(narratedToolResults) > 0 {
+		finalContent = joinHistoryText(finalContent, buildToolResultsContinuation(narratedToolResults))
 	}
 	if finalContent == "" {
-		if len(currentImages) > 0 {
+		switch {
+		case len(currentImages) > 0:
 			finalContent = normalizeUserContent("", true)
-		} else {
+		case len(attachToolResults) > 0:
+			finalContent = structuredToolResultsContent
+		default:
 			finalContent = minimalFallbackUserContent
 		}
 	}
 
 	// 转换工具
 	kiroTools, toolNameMap := convertClaudeTools(req.Tools)
+	kiroTools = appendHistoryPlaceholderTools(kiroTools, history)
+	for mapped, original := range historyToolNames {
+		if _, ok := toolNameMap[mapped]; !ok {
+			if toolNameMap == nil {
+				toolNameMap = make(map[string]string)
+			}
+			toolNameMap[mapped] = original
+		}
+	}
 
 	// 构建 payload
 	payload := &KiroPayload{}
@@ -375,12 +387,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 		Images:  currentImages,
 	}
 
-	// Only attach structured tool results when they answer the last history
-	// assistant turn; otherwise they have already been folded into finalContent.
-	var attachToolResults []KiroToolResult
-	if keepCurrentToolResults {
-		attachToolResults = currentToolResults
-	}
+	// Results not attached here have already been folded into finalContent.
 	if len(kiroTools) > 0 || len(attachToolResults) > 0 {
 		payload.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext = &UserInputMessageContext{
 			Tools:       kiroTools,
@@ -397,6 +404,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 
 	dedupeKiroImages(payload)
 	truncatePayloadToLimit(payload, systemPrompt != "")
+	pruneOrphanedToolPairs(payload)
 
 	return payload
 }
@@ -1466,34 +1474,29 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 		history = append(priming, history...)
 	}
 
-	// Keep structured tool results only while they answer the final assistant
-	// tool turn. Older tool cycles are flattened by sanitizeKiroHistory because
-	// Kiro rejects structured tool calls and results in history.
+	// See ClaudeToKiro: flattened by default, structured when enabled.
 	capToolResultTexts(currentToolResults)
-	currentToolResultIDs := collectToolResultIDs(currentToolResults)
-	keepCurrentToolResults := currentToolResultsMatchLastAssistant(history, currentToolResultIDs)
-
-	if keepCurrentToolResults {
-		history = sanitizeKiroHistory(history, currentToolResultIDs)
-	} else {
-		history = sanitizeKiroHistory(history, nil)
-	}
+	history, attachToolResults, narratedToolResults := prepareToolHistory(history, currentToolResults, shortenToolName)
 	// 构建最终内容。工具结果既保留结构化配对，也携带可读文本；
 	// 同一消息带有图片时，图片占位文本不能覆盖工具结果内容。
 	finalContent := currentContent
-	if len(currentToolResults) > 0 {
-		finalContent = joinHistoryText(finalContent, buildToolResultsContinuation(currentToolResults))
+	if len(narratedToolResults) > 0 {
+		finalContent = joinHistoryText(finalContent, buildToolResultsContinuation(narratedToolResults))
 	}
 	if finalContent == "" {
-		if len(currentImages) > 0 {
+		switch {
+		case len(currentImages) > 0:
 			finalContent = normalizeUserContent("", true)
-		} else {
+		case len(attachToolResults) > 0:
+			finalContent = structuredToolResultsContent
+		default:
 			finalContent = minimalFallbackUserContent
 		}
 	}
 
 	// 转换工具
 	kiroTools := convertOpenAITools(req.Tools)
+	kiroTools = appendHistoryPlaceholderTools(kiroTools, history)
 
 	// 构建 payload
 	payload := &KiroPayload{}
@@ -1506,10 +1509,6 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 		Images:  currentImages,
 	}
 
-	var attachToolResults []KiroToolResult
-	if keepCurrentToolResults {
-		attachToolResults = currentToolResults
-	}
 	if len(kiroTools) > 0 || len(attachToolResults) > 0 {
 		payload.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext = &UserInputMessageContext{
 			Tools:       kiroTools,
@@ -1526,6 +1525,7 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 
 	dedupeKiroImages(payload)
 	truncatePayloadToLimit(payload, systemPrompt != "")
+	pruneOrphanedToolPairs(payload)
 
 	return payload
 }
