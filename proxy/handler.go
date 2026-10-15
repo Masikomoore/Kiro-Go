@@ -143,7 +143,8 @@ func validateClaudeRequestShape(req *ClaudeRequest) string {
 	lastRole := ""
 	for _, msg := range req.Messages {
 		role := strings.TrimSpace(msg.Role)
-		if role == "" {
+		// role=system turns are folded into the system prompt by ClaudeToKiro.
+		if role == "" || role == "system" {
 			continue
 		}
 		lastRole = role
@@ -556,6 +557,16 @@ func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []m
 
 func fallbackAnthropicModels(thinkingSuffix string) []map[string]interface{} {
 	return []map[string]interface{}{
+		buildModelInfo("claude-opus-5.5", "anthropic", true),
+		buildModelInfo("claude-opus-5.5"+thinkingSuffix, "anthropic", true),
+		buildModelInfo("claude-sonnet-5.5", "anthropic", true),
+		buildModelInfo("claude-sonnet-5.5"+thinkingSuffix, "anthropic", true),
+		buildModelInfo("claude-haiku-5.5", "anthropic", true),
+		buildModelInfo("claude-haiku-5.5"+thinkingSuffix, "anthropic", true),
+		buildModelInfo("claude-fable-5.1", "anthropic", true),
+		buildModelInfo("claude-fable-5.1"+thinkingSuffix, "anthropic", true),
+		buildModelInfo("claude-opus-4.8", "anthropic", true),
+		buildModelInfo("claude-opus-4.8"+thinkingSuffix, "anthropic", true),
 		buildModelInfo("claude-sonnet-4.6", "anthropic", true),
 		buildModelInfo("claude-sonnet-4.6"+thinkingSuffix, "anthropic", true),
 		buildModelInfo("claude-opus-4.6", "anthropic", true),

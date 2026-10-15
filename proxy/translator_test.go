@@ -512,6 +512,9 @@ func TestParseModelAndThinking(t *testing.T) {
 		{"gpt-3.5-turbo", "gpt-3.5-turbo", "claude-sonnet-4.5", false},
 
 		// Thinking suffix is stripped before mapping.
+		{"fable dash form", "claude-fable-5-1", "claude-fable-5.1", false},
+		{"mythos dash form", "claude-mythos-5-1", "claude-mythos-5.1", false},
+		{"fable thinking suffix", "claude-fable-5-1-thinking", "claude-fable-5.1", true},
 		{"thinking suffix on dash form", "claude-opus-4-8-thinking", "claude-opus-4.8", true},
 		{"thinking suffix on dot form", "claude-sonnet-4.5-thinking", "claude-sonnet-4.5", true},
 		{"thinking suffix on legacy alias", "claude-3-5-sonnet-thinking", "claude-sonnet-4.5", true},

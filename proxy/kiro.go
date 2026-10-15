@@ -258,9 +258,9 @@ type KiroToolUse struct {
 }
 
 type InferenceConfig struct {
-	MaxTokens   int     `json:"maxTokens,omitempty"`
-	Temperature float64 `json:"temperature,omitempty"`
-	TopP        float64 `json:"topP,omitempty"`
+	MaxTokens   int      `json:"maxTokens,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"topP,omitempty"`
 }
 
 // ==================== Stream Callbacks ====================
@@ -826,7 +826,7 @@ func getContextWindowSize(model string) int {
 // dash form) and is used to classify 1M-window models by version. The minor
 // component is optional so major-only identifiers such as "claude-opus-5"
 // classify correctly instead of falling through to the 200K default.
-var claudeVersionExtractor = regexp.MustCompile(`claude-(?:opus|sonnet|haiku)-(\d+)(?:[.-](\d+))?`)
+var claudeVersionExtractor = regexp.MustCompile(`claude-(?:opus|sonnet|haiku|fable|mythos)-(\d+)(?:[.-](\d+))?`)
 
 func isLargeContextModel(model string) bool {
 	m := strings.ToLower(model)

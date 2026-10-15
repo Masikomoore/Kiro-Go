@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -34,9 +35,10 @@ var modelAliases = []modelMapping{
 }
 
 // claudeVersionPattern normalizes "claude-{family}-N-M" to "claude-{family}-N.M".
+// Families include fable and mythos, which Kiro lists alongside opus/sonnet/haiku.
 // Minor is capped at 1-2 digits with a \b boundary so dated snapshots
 // (claude-sonnet-4-20250514) are not accidentally rewritten.
-var claudeVersionPattern = regexp.MustCompile(`claude-(opus|sonnet|haiku)-(\d+)-(\d{1,2})\b`)
+var claudeVersionPattern = regexp.MustCompile(`claude-(opus|sonnet|haiku|fable|mythos)-(\d+)-(\d{1,2})\b`)
 
 // Thinking 模式提示
 const ThinkingModePrompt = `<thinking_mode>enabled</thinking_mode>
@@ -123,8 +125,8 @@ type ClaudeRequest struct {
 	Model       string                `json:"model"`
 	Messages    []ClaudeMessage       `json:"messages"`
 	MaxTokens   int                   `json:"max_tokens"`
-	Temperature float64               `json:"temperature,omitempty"`
-	TopP        float64               `json:"top_p,omitempty"`
+	Temperature *float64              `json:"temperature,omitempty"`
+	TopP        *float64              `json:"top_p,omitempty"`
 	Stream      bool                  `json:"stream,omitempty"`
 	System      interface{}           `json:"system,omitempty"` // string or []SystemBlock
 	Thinking    *ClaudeThinkingConfig `json:"thinking,omitempty"`
@@ -201,12 +203,40 @@ type ClaudeUsage struct {
 
 const maxToolDescLen = 10237
 
+// limitToolDescription caps a tool description at maxToolDescLen bytes without
+// splitting a multi-byte character; a split rune makes the JSON body invalid UTF-8.
+func limitToolDescription(desc string) string {
+	if len(desc) <= maxToolDescLen {
+		return desc
+	}
+	return truncateUTF8Bytes(desc, maxToolDescLen) + "..."
+}
+
+// truncateUTF8Bytes returns the longest prefix of s that fits in limit bytes
+// and ends on a rune boundary.
+func truncateUTF8Bytes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
+}
+
 func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	modelID := MapModel(req.Model)
 	origin := "AI_EDITOR"
 
+	// Kiro has no mid-conversation system turn, so role=system messages are
+	// folded into the top-level system prompt before history is built.
+	system, messages := foldInlineSystemMessages(req.System, req.Messages)
+
 	// 提取系统提示
-	systemPrompt := buildClaudeSystemPrompt(req.System, thinking)
+	systemPrompt := buildClaudeSystemPrompt(system, thinking)
 
 	// 构建历史消息
 	history := make([]KiroHistoryMessage, 0)
@@ -214,8 +244,8 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	var currentImages []KiroImage
 	var currentToolResults []KiroToolResult
 
-	for i, msg := range req.Messages {
-		isLast := i == len(req.Messages)-1
+	for i, msg := range messages {
+		isLast := i == len(messages)-1
 
 		if msg.Role == "user" {
 			content, images, toolResults := extractClaudeUserContent(msg.Content)
@@ -310,7 +340,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	payload.ConversationState.ChatTriggerType = "MANUAL"
 	payload.ConversationState.AgentTaskType = "vibe"
 	payload.ConversationState.AgentContinuationId = uuid.New().String()
-	payload.ConversationState.ConversationID = buildConversationID(modelID, systemPrompt, firstClaudeConversationAnchor(req.Messages))
+	payload.ConversationState.ConversationID = buildConversationID(modelID, systemPrompt, firstClaudeConversationAnchor(messages))
 	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{
 		Content: finalContent,
 		ModelID: modelID,
@@ -335,17 +365,44 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 		payload.ConversationState.History = history
 	}
 
-	if req.MaxTokens > 0 || req.Temperature > 0 || req.TopP > 0 {
-		payload.InferenceConfig = &InferenceConfig{
-			MaxTokens:   req.MaxTokens,
-			Temperature: req.Temperature,
-			TopP:        req.TopP,
-		}
-	}
+	payload.InferenceConfig = buildInferenceConfig(req.MaxTokens, req.Temperature, req.TopP)
 
 	truncatePayloadToLimit(payload, systemPrompt != "")
 
 	return payload
+}
+
+// buildInferenceConfig keeps an explicit temperature of 0, clamps sampling
+// values to [0, 1], and drops top_p when temperature is also set: current
+// Claude models reject requests that specify both.
+func buildInferenceConfig(maxTokens int, temperature, topP *float64) *InferenceConfig {
+	var temp, p *float64
+	if temperature != nil {
+		v := clampUnit(*temperature)
+		temp = &v
+	}
+	if topP != nil && temp == nil {
+		v := clampUnit(*topP)
+		p = &v
+	}
+	if maxTokens <= 0 && temp == nil && p == nil {
+		return nil
+	}
+	cfg := &InferenceConfig{Temperature: temp, TopP: p}
+	if maxTokens > 0 {
+		cfg.MaxTokens = maxTokens
+	}
+	return cfg
+}
+
+func clampUnit(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 func buildClaudeSystemPrompt(system interface{}, thinking bool) string {
@@ -527,6 +584,61 @@ func collapseBlankLines(s string) string {
 		out = append(out, l)
 	}
 	return strings.Join(out, "\n")
+}
+
+// foldInlineSystemMessages moves the text of role=system messages into the
+// top-level system prompt and returns the remaining messages in order. Clients
+// such as Claude Desktop insert system turns mid-conversation; without folding,
+// their text is dropped, and a trailing one turns the real question into history.
+func foldInlineSystemMessages(system interface{}, messages []ClaudeMessage) (interface{}, []ClaudeMessage) {
+	hasInline := false
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			hasInline = true
+			break
+		}
+	}
+	if !hasInline {
+		return system, messages
+	}
+
+	var inline []string
+	filtered := make([]ClaudeMessage, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role != "system" {
+			filtered = append(filtered, msg)
+			continue
+		}
+		if text := strings.TrimSpace(extractSystemPrompt(msg.Content)); text != "" {
+			inline = append(inline, text)
+		}
+	}
+	if len(inline) == 0 {
+		return system, filtered
+	}
+	inlineText := strings.Join(inline, "\n\n")
+
+	switch v := system.(type) {
+	case nil:
+		return inlineText, filtered
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return inlineText, filtered
+		}
+		return v + "\n\n" + inlineText, filtered
+	case []interface{}:
+		blocks := make([]interface{}, 0, len(v)+1)
+		blocks = append(blocks, v...)
+		blocks = append(blocks, map[string]interface{}{"type": "text", "text": inlineText})
+		return blocks, filtered
+	case []string:
+		blocks := make([]string, 0, len(v)+1)
+		blocks = append(blocks, v...)
+		blocks = append(blocks, inlineText)
+		return blocks, filtered
+	default:
+		return inlineText, filtered
+	}
 }
 
 func cloneClaudeRequestForThinking(req *ClaudeRequest, thinking bool) *ClaudeRequest {
@@ -808,9 +920,7 @@ func convertClaudeTools(tools []ClaudeTool) ([]KiroToolWrapper, map[string]strin
 			continue
 		}
 		desc := tool.Description
-		if len(desc) > maxToolDescLen {
-			desc = desc[:maxToolDescLen] + "..."
-		}
+		desc = limitToolDescription(desc)
 		sanitized := shortenToolName(sanitizeToolName(tool.Name))
 		if sanitized != tool.Name {
 			nameMap[sanitized] = tool.Name
@@ -1078,8 +1188,8 @@ type OpenAIRequest struct {
 	Model       string          `json:"model"`
 	Messages    []OpenAIMessage `json:"messages"`
 	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature float64         `json:"temperature,omitempty"`
-	TopP        float64         `json:"top_p,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	TopP        *float64        `json:"top_p,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
 	Tools       []OpenAITool    `json:"tools,omitempty"`
 }
@@ -1371,13 +1481,7 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 		payload.ConversationState.History = history
 	}
 
-	if req.MaxTokens > 0 || req.Temperature > 0 || req.TopP > 0 {
-		payload.InferenceConfig = &InferenceConfig{
-			MaxTokens:   req.MaxTokens,
-			Temperature: req.Temperature,
-			TopP:        req.TopP,
-		}
-	}
+	payload.InferenceConfig = buildInferenceConfig(req.MaxTokens, req.Temperature, req.TopP)
 
 	truncatePayloadToLimit(payload, systemPrompt != "")
 
@@ -2107,9 +2211,7 @@ func convertOpenAITools(tools []OpenAITool) []KiroToolWrapper {
 			continue
 		}
 		desc := tool.Function.Description
-		if len(desc) > maxToolDescLen {
-			desc = desc[:maxToolDescLen] + "..."
-		}
+		desc = limitToolDescription(desc)
 		name := shortenToolName(tool.Function.Name)
 		if strings.TrimSpace(name) == "" {
 			// Kiro rejects tools with empty names; skip unusable specs.
