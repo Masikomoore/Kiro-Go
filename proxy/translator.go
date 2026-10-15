@@ -2323,28 +2323,31 @@ func KiroToOpenAIResponse(content string, toolUses []KiroToolUse, inputTokens, o
 // extractThinkingFromContent 从内容中提取 <thinking> 标签内的内容
 func extractThinkingFromContent(content string) (string, string) {
 	var reasoning string
-	result := content
+	var answer strings.Builder
+	var scan thinkingTagScanner
+	rest := content
 
 	for {
-		start := strings.Index(result, "<thinking>")
+		start := scan.findStart(rest, true)
 		if start == -1 {
 			break
 		}
-		end := strings.Index(result[start:], "</thinking>")
+		bodyStart := start + len(thinkingOpenTag)
+		end := scan.findEnd(rest[bodyStart:], true)
 		if end == -1 {
 			break
 		}
-		end += start
+		end += bodyStart
 
-		// 提取 thinking 内容
-		thinkingContent := result[start+10 : end]
-		reasoning += thinkingContent
-
-		// 从结果中移除 thinking 标签
-		result = result[:start] + result[end+11:]
+		// 提取 thinking 内容，并从结果中移除 thinking 标签
+		reasoning += rest[bodyStart:end]
+		answer.WriteString(rest[:start])
+		scan.emitted(rest[:start])
+		rest = rest[end+len(thinkingCloseTag):]
 	}
+	answer.WriteString(rest)
 
-	return strings.TrimSpace(result), reasoning
+	return strings.TrimSpace(answer.String()), reasoning
 }
 
 // KiroToOpenAIResponseWithReasoning 带 reasoning_content 的 OpenAI 响应

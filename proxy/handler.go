@@ -1043,6 +1043,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		}
 
 		var textBuffer string
+		var tagScan thinkingTagScanner
 		var inThinkingBlock bool
 		var dropTagThinking bool
 		var thinkingSource thinkingStreamSource
@@ -1160,12 +1161,13 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 
 			for {
 				if !inThinkingBlock {
-					thinkingStart := strings.Index(textBuffer, "<thinking>")
+					thinkingStart := tagScan.findStart(textBuffer, forceFlush)
 					if thinkingStart != -1 {
 						if thinkingStart > 0 {
+							tagScan.emitted(textBuffer[:thinkingStart])
 							sendText(textBuffer[:thinkingStart], 0)
 						}
-						textBuffer = textBuffer[thinkingStart+10:]
+						textBuffer = textBuffer[thinkingStart+len(thinkingOpenTag):]
 						inThinkingBlock = true
 						dropTagThinking = !allowTagSource(&thinkingSource)
 						thinkingStarted = false
@@ -1176,6 +1178,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 							safeLen = max(0, len(runes)-15)
 						}
 						if safeLen > 0 {
+							tagScan.emitted(string(runes[:safeLen]))
 							sendText(string(runes[:safeLen]), 0)
 							textBuffer = string(runes[safeLen:])
 						}
@@ -1184,7 +1187,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 						break
 					}
 				} else {
-					thinkingEnd := strings.Index(textBuffer, "</thinking>")
+					thinkingEnd := tagScan.findEnd(textBuffer, forceFlush)
 					if thinkingEnd != -1 {
 						content := textBuffer[:thinkingEnd]
 						if !dropTagThinking {
@@ -1195,7 +1198,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 								sendText(content, 3)
 							}
 						}
-						textBuffer = textBuffer[thinkingEnd+11:]
+						textBuffer = textBuffer[thinkingEnd+len(thinkingCloseTag):]
 						inThinkingBlock = false
 						dropTagThinking = false
 						thinkingStarted = false
@@ -1328,6 +1331,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 			realInputTokens = 0
 			upstreamStopReason = ""
 			textBuffer = ""
+			tagScan = thinkingTagScanner{}
 			inThinkingBlock = false
 			dropTagThinking = false
 			thinkingSource = thinkingSourceUnknown
@@ -1819,6 +1823,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		var rawContentBuilder strings.Builder
 		var rawReasoningBuilder strings.Builder
 		var textBuffer string
+		var tagScan thinkingTagScanner
 		var inThinkingBlock bool
 		var dropTagThinking bool
 		var thinkingSource thinkingStreamSource
@@ -1965,12 +1970,13 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 
 			for {
 				if !inThinkingBlock {
-					thinkingStart := strings.Index(textBuffer, "<thinking>")
+					thinkingStart := tagScan.findStart(textBuffer, forceFlush)
 					if thinkingStart != -1 {
 						if thinkingStart > 0 {
+							tagScan.emitted(textBuffer[:thinkingStart])
 							sendChunk(textBuffer[:thinkingStart], 0)
 						}
-						textBuffer = textBuffer[thinkingStart+10:]
+						textBuffer = textBuffer[thinkingStart+len(thinkingOpenTag):]
 						inThinkingBlock = true
 						dropTagThinking = !allowTagSource(&thinkingSource)
 						thinkingStarted = false
@@ -1981,6 +1987,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 							safeLen = max(0, len(runes)-15)
 						}
 						if safeLen > 0 {
+							tagScan.emitted(string(runes[:safeLen]))
 							sendChunk(string(runes[:safeLen]), 0)
 							textBuffer = string(runes[safeLen:])
 						}
@@ -1989,7 +1996,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 						break
 					}
 				} else {
-					thinkingEnd := strings.Index(textBuffer, "</thinking>")
+					thinkingEnd := tagScan.findEnd(textBuffer, forceFlush)
 					if thinkingEnd != -1 {
 						content := textBuffer[:thinkingEnd]
 						if !dropTagThinking {
@@ -2000,7 +2007,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 								sendChunk(content, 3)
 							}
 						}
-						textBuffer = textBuffer[thinkingEnd+11:]
+						textBuffer = textBuffer[thinkingEnd+len(thinkingCloseTag):]
 						inThinkingBlock = false
 						dropTagThinking = false
 						thinkingStarted = false
@@ -2126,6 +2133,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 			realInputTokens = 0
 			upstreamStopReason = ""
 			textBuffer = ""
+			tagScan = thinkingTagScanner{}
 			inThinkingBlock = false
 			dropTagThinking = false
 			thinkingSource = thinkingSourceUnknown
