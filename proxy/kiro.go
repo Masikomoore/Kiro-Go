@@ -363,7 +363,55 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 }
 
 // CallKiroAPIContext calls Kiro while respecting cancellation from the client request.
+// Placeholder profile ARNs the Kiro IDE sends for accounts without a real
+// profile. Builder ID / free accounts get 400 "profileArn is required for
+// this request." from generateAssistantResponse when the field is missing.
+// Values from hank9999/kiro.rs (MIT), src/kiro/model/credentials.rs.
+const (
+	builderIDPlaceholderProfileArn = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
+	socialPlaceholderProfileArn    = "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
+)
+
+// placeholderProfileArn returns the placeholder ARN for a Builder ID or
+// social account, or "" for accounts that must use a real profile.
+func placeholderProfileArn(account *config.Account) string {
+	if account == nil || config.IsAPIKeyAccount(account) {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(account.AuthMethod), "social") {
+		return socialPlaceholderProfileArn
+	}
+	if strings.EqualFold(strings.TrimSpace(account.Provider), "BuilderId") {
+		return builderIDPlaceholderProfileArn
+	}
+	return ""
+}
+
+// CallKiroAPIContext sends one generateAssistantResponse request. With
+// compat.builderIdPlaceholderArn=on_demand, a "profileArn is required" reply
+// for an account without a profile is retried once with the placeholder ARN.
 func CallKiroAPIContext(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+	err := callKiroAPIContextOnce(ctx, account, payload, callback)
+	if err == nil || payload == nil || account == nil {
+		return err
+	}
+	if classifyUpstreamError(err) != upstreamErrProfileRequired ||
+		config.GetCompatConfig().BuilderIDPlaceholderArn != config.PlaceholderArnOnDemand ||
+		strings.TrimSpace(account.ProfileArn) != "" {
+		return err
+	}
+	arn := placeholderProfileArn(account)
+	if arn == "" {
+		return err
+	}
+	original := payload.ProfileArn
+	payload.ProfileArn = arn
+	defer func() { payload.ProfileArn = original }()
+	logger.Warnf("[ProfileArn] Upstream requires a profileArn for %s; retrying with the placeholder ARN", accountEmailForLog(account))
+	return callKiroAPIContextOnce(ctx, account, payload, callback)
+}
+
+func callKiroAPIContextOnce(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -398,6 +446,10 @@ func CallKiroAPIContext(ctx context.Context, account *config.Account, payload *K
 		callback = &wrapped
 	}
 
+	if payload != nil && strings.TrimSpace(payload.ProfileArn) == "" &&
+		config.GetCompatConfig().BuilderIDPlaceholderArn == config.PlaceholderArnAlways {
+		payload.ProfileArn = placeholderProfileArn(account)
+	}
 	if payload != nil && strings.TrimSpace(payload.ProfileArn) == "" && !config.IsAPIKeyAccount(account) {
 		if profileArn, err := ResolveProfileArn(account); err == nil {
 			payload.ProfileArn = profileArn
