@@ -62,16 +62,9 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 				accountID = account.ID
 			}
 			h.recordFailureWithDetails("claude", req.Model, accountID, err)
-			status := 502
-			errType := "api_error"
-			if isAuthErrorMessage(err.Error()) {
-				status = 401
-				errType = "authentication_error"
-			} else if isQuotaErrorMessage(err.Error()) {
-				status = 429
-				errType = "rate_limit_error"
-			}
-			h.sendClaudeError(w, status, errType, err.Error())
+			mapped := h.mapUpstreamError(req.Model, err)
+			setRetryAfterHeader(w, mapped.RetryAfter)
+			h.sendClaudeError(w, mapped.Status, mapped.Type, mapped.Message)
 			return
 		}
 		if account != nil {
@@ -150,8 +143,14 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 	excluded := make(map[string]bool)
 	var lastErr error
 
+	refreshed := make(map[string]bool)
+	var retryAccount *config.Account
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(req.Model, excluded)
+		account := retryAccount
+		retryAccount = nil
+		if account == nil {
+			account = h.pool.GetNextForModelExcluding(req.Model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -205,8 +204,16 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 				return nil, account, ctx.Err()
 			}
 			lastErr = err
+			action := h.recoverFromUpstreamError(account, err, refreshed)
+			if action == upstreamRetrySameAccount {
+				retryAccount = account
+				attempt--
+				continue
+			}
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			if action == upstreamStopRetrying {
+				break
+			}
 			continue
 		}
 

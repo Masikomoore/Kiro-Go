@@ -475,22 +475,19 @@ endpointLoop:
 				continue endpointLoop
 			}
 
-			if resp.StatusCode == 429 {
-				resp.Body.Close()
-				logger.Warnf("[KiroAPI] Endpoint %s quota exhausted (429), trying next...", ep.Name)
-				lastErr = fmt.Errorf("quota exhausted on %s", ep.Name)
-				continue endpointLoop
-			}
-
 			if resp.StatusCode != 200 {
-				errBody, _ := io.ReadAll(resp.Body)
+				errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 				resp.Body.Close()
-				lastErr = fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, ep.Name, string(errBody))
-				// Authentication errors and payment errors are not retried across endpoints.
-				if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
-					return lastErr
+				httpErr := newKiroHTTPError(resp, ep.Name, errBody)
+				lastErr = httpErr
+				class := classifyKiroHTTPError(resp.StatusCode, httpErr.Body)
+				// Only a plain 429 or an upstream fault can succeed on another
+				// endpoint. Request, credential, and account-level failures repeat
+				// there, so they go straight back to the account loop.
+				if !tryNextEndpointAfter(class) {
+					return httpErr
 				}
-				logger.Warnf("[KiroAPI] Endpoint %s error: %v", ep.Name, lastErr)
+				logger.Warnf("[KiroAPI] Endpoint %s error (%s): %v", ep.Name, class, httpErr)
 				continue endpointLoop
 			}
 
@@ -539,6 +536,15 @@ endpointLoop:
 		return lastErr
 	}
 	return fmt.Errorf("all endpoints failed")
+}
+
+func tryNextEndpointAfter(class upstreamErrorClass) bool {
+	switch class {
+	case upstreamErrRateLimited, upstreamErrTransient, upstreamErrOther:
+		return true
+	default:
+		return false
+	}
 }
 
 func isRetryableStreamError(err error) bool {
@@ -668,6 +674,9 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 			detail, _ := event["message"].(string)
 			if detail == "" {
 				detail = messageType
+			}
+			if kind := firstNonEmpty(headers[":exception-type"], headers[":error-code"]); kind != "" {
+				detail = kind + ": " + detail
 			}
 			return emitted, fmt.Errorf("%w: %s", errKiroEventStreamUpstream, detail)
 		}

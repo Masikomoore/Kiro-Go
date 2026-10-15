@@ -131,8 +131,14 @@ func (h *Handler) handleResponsesNonStream(
 	var lastErr error
 	reqStart := time.Now()
 
+	refreshed := make(map[string]bool)
+	var retryAccount *config.Account
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded)
+		account := retryAccount
+		retryAccount = nil
+		if account == nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -192,10 +198,15 @@ func (h *Handler) handleResponsesNonStream(
 				return
 			}
 			lastErr = err
+			action := h.recoverFromUpstreamError(account, err, refreshed)
+			if action == upstreamRetrySameAccount {
+				retryAccount = account
+				attempt--
+				continue
+			}
 			excluded[account.ID] = true
-			// Integrity failures are upstream hiccups, not account faults.
-			if !isStreamIntegrityError(err) {
-				h.handleAccountFailure(account, err)
+			if action == upstreamStopRetrying {
+				break
 			}
 			continue
 		}
@@ -232,12 +243,7 @@ func (h *Handler) handleResponsesNonStream(
 		return
 	}
 
-	if lastErr == nil {
-		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
-		return
-	}
-	h.recordFailureWithDetails("responses", model, "", lastErr)
-	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
+	h.writeOpenAIUpstreamFailure(w, "responses", model, lastErr)
 }
 
 func mapResponsesCompletion(reason string) (status, incompleteReason string) {
@@ -361,8 +367,14 @@ func (h *Handler) handleResponsesStream(
 	responseStarted := false
 	reqStart := time.Now()
 
+	refreshed := make(map[string]bool)
+	var retryAccount *config.Account
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded)
+		account := retryAccount
+		retryAccount = nil
+		if account == nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -545,21 +557,27 @@ func (h *Handler) handleResponsesStream(
 			}
 			if !responseStarted {
 				lastErr = err
+				action := h.recoverFromUpstreamError(account, err, refreshed)
+				if action == upstreamRetrySameAccount {
+					retryAccount = account
+					attempt--
+					continue
+				}
 				excluded[account.ID] = true
-				// Integrity failures are upstream hiccups, not account faults.
-				if !isStreamIntegrityError(err) {
-					h.handleAccountFailure(account, err)
+				if action == upstreamStopRetrying {
+					break
 				}
 				continue
 			}
+			mapped := h.mapUpstreamError(model, err)
 			send("response.failed", map[string]interface{}{
 				"type": "response.failed",
 				"response": map[string]interface{}{
 					"id":     respID,
 					"status": "failed",
 					"error": map[string]string{
-						"type":    "server_error",
-						"message": err.Error(),
+						"type":    openAIErrorType(mapped.Status),
+						"message": mapped.Message,
 					},
 				},
 			})
@@ -647,14 +665,15 @@ func (h *Handler) handleResponsesStream(
 		return
 	}
 	h.recordFailureWithDetails("responses", model, "", lastErr)
+	mapped := h.mapUpstreamError(model, lastErr)
 	send("response.failed", map[string]interface{}{
 		"type": "response.failed",
 		"response": map[string]interface{}{
 			"id":     respID,
 			"status": "failed",
 			"error": map[string]string{
-				"type":    "server_error",
-				"message": lastErr.Error(),
+				"type":    openAIErrorType(mapped.Status),
+				"message": mapped.Message,
 			},
 		},
 	})

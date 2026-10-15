@@ -20,8 +20,14 @@ type AccountPool struct {
 	currentIndex  uint64
 	cooldowns     map[string]time.Time       // 账号冷却时间
 	errorCounts   map[string]int             // 连续错误计数
+	rateLimits    map[string]int             // consecutive 429 responses per account
 	modelLists    map[string]map[string]bool // accountID → set of modelIDs (from ListAvailableModels)
 }
+
+const (
+	rateLimitBaseCooldown = time.Minute
+	rateLimitMaxCooldown  = 5 * time.Minute
+)
 
 var (
 	pool     *AccountPool
@@ -34,6 +40,7 @@ func GetPool() *AccountPool {
 		pool = &AccountPool{
 			cooldowns:   make(map[string]time.Time),
 			errorCounts: make(map[string]int),
+			rateLimits:  make(map[string]int),
 			modelLists:  make(map[string]map[string]bool),
 		}
 		pool.Reload()
@@ -118,7 +125,7 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 		return acc
 	}
 
-		// 无可用账号，返回冷却时间最短的（排除额度用尽的，除非允许超额）
+	// 无可用账号，返回冷却时间最短的（排除额度用尽的，除非允许超额）
 	var best *config.Account
 	var earliest time.Time
 	for i := range p.accounts {
@@ -273,6 +280,75 @@ func (p *AccountPool) RecordSuccess(id string) {
 	defer p.mu.Unlock()
 	delete(p.cooldowns, id)
 	p.errorCounts[id] = 0
+	delete(p.rateLimits, id)
+}
+
+// SetCooldown keeps an account out of rotation until the given time. An
+// existing later deadline is kept, so a short cooldown never shortens a long one.
+func (p *AccountPool) SetCooldown(id string, until time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.setCooldownLocked(id, until)
+}
+
+func (p *AccountPool) setCooldownLocked(id string, until time.Time) {
+	if p.cooldowns == nil {
+		p.cooldowns = make(map[string]time.Time)
+	}
+	if current, ok := p.cooldowns[id]; ok && current.After(until) {
+		return
+	}
+	p.cooldowns[id] = until
+}
+
+// RecordRateLimited applies the cooldown for an ordinary upstream 429 and
+// returns it. The upstream Retry-After wins when present; otherwise the delay
+// starts at one minute and doubles per consecutive 429, capped at five minutes.
+// A 429 says nothing about the credential itself, so it never counts toward
+// the consecutive-error threshold.
+func (p *AccountPool) RecordRateLimited(id string, retryAfter time.Duration) time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.rateLimits == nil {
+		p.rateLimits = make(map[string]int)
+	}
+	p.rateLimits[id]++
+	cooldown := retryAfter
+	if cooldown <= 0 {
+		cooldown = rateLimitBaseCooldown << (p.rateLimits[id] - 1)
+		if cooldown <= 0 || cooldown > rateLimitMaxCooldown {
+			cooldown = rateLimitMaxCooldown
+		}
+	}
+	p.setCooldownLocked(id, time.Now().Add(cooldown))
+	return cooldown
+}
+
+// NextAvailableIn reports how long until an account that can serve model leaves
+// cooldown. It returns zero when one is usable now or when no account is known.
+func (p *AccountPool) NextAvailableIn(model string) time.Duration {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	allowOverUsage := config.GetAllowOverUsage()
+	now := time.Now()
+	var earliest time.Time
+	for i := range p.accounts {
+		acc := &p.accounts[i]
+		if !p.accountHasModel(acc.ID, model) || isQuotaBlocked(*acc, allowOverUsage) {
+			continue
+		}
+		until, ok := p.cooldowns[acc.ID]
+		if !ok || !until.After(now) {
+			return 0
+		}
+		if earliest.IsZero() || until.Before(earliest) {
+			earliest = until
+		}
+	}
+	if earliest.IsZero() {
+		return 0
+	}
+	return earliest.Sub(now)
 }
 
 // RecordError 记录请求错误，设置冷却

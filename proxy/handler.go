@@ -958,8 +958,14 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		sse.Start()
 	}
 
+	refreshed := make(map[string]bool)
+	var retryAccount *config.Account
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded)
+		account := retryAccount
+		retryAccount = nil
+		if account == nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -1329,18 +1335,27 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 				return
 			}
 			lastErr = err
-			excluded[account.ID] = true
-			if !isStreamIntegrityError(err) {
-				h.handleAccountFailure(account, err)
-			}
-			if !messageStarted && !sse.Committed() {
+			canRetry := !messageStarted && !sse.Committed()
+			action := h.recoverFromUpstreamError(account, err, refreshed)
+			if action == upstreamRetrySameAccount && canRetry {
 				sse.Disarm()
+				retryAccount = account
+				attempt--
+				continue
+			}
+			excluded[account.ID] = true
+			if canRetry {
+				sse.Disarm()
+				if action == upstreamStopRetrying {
+					break
+				}
 				continue
 			}
 			h.recordFailureWithDetails("claude", model, account.ID, err)
+			mapped := h.mapUpstreamError(model, err)
 			sse.Send("error", map[string]interface{}{
 				"type":  "error",
-				"error": map[string]string{"type": "api_error", "message": err.Error()},
+				"error": map[string]string{"type": mapped.Type, "message": mapped.Message},
 			})
 			return
 		}
@@ -1389,13 +1404,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	if lastErr == nil {
-		h.sendClaudeError(w, 503, "api_error", "No available accounts")
-		return
-	}
-
-	h.recordFailureWithDetails("claude", model, "", lastErr)
-	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
+	h.writeClaudeUpstreamFailure(w, "claude", model, lastErr)
 }
 
 func (h *Handler) sendSSE(w http.ResponseWriter, flusher http.Flusher, event string, data interface{}) {
@@ -1557,8 +1566,14 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 	var lastErr error
 	reqStart := time.Now()
 
+	refreshed := make(map[string]bool)
+	var retryAccount *config.Account
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded)
+		account := retryAccount
+		retryAccount = nil
+		if account == nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -1627,9 +1642,15 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 				return
 			}
 			lastErr = err
+			action := h.recoverFromUpstreamError(account, err, refreshed)
+			if action == upstreamRetrySameAccount {
+				retryAccount = account
+				attempt--
+				continue
+			}
 			excluded[account.ID] = true
-			if !isStreamIntegrityError(err) {
-				h.handleAccountFailure(account, err)
+			if action == upstreamStopRetrying {
+				break
 			}
 			continue
 		}
@@ -1690,13 +1711,7 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	if lastErr == nil {
-		h.sendClaudeError(w, 503, "api_error", "No available accounts")
-		return
-	}
-
-	h.recordFailureWithDetails("claude", model, "", lastErr)
-	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
+	h.writeClaudeUpstreamFailure(w, "claude", model, lastErr)
 }
 
 func (h *Handler) sendClaudeError(w http.ResponseWriter, status int, errType, message string) {
@@ -1770,8 +1785,14 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	var lastErr error
 	reqStart := time.Now()
 
+	refreshed := make(map[string]bool)
+	var retryAccount *config.Account
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded)
+		account := retryAccount
+		retryAccount = nil
+		if account == nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -1799,10 +1820,11 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		responseStarted := false
 
 		sendStreamError := func(err error) {
+			mapped := h.mapUpstreamError(model, err)
 			data, _ := json.Marshal(map[string]interface{}{
 				"error": map[string]string{
-					"message": err.Error(),
-					"type":    "server_error",
+					"message": mapped.Message,
+					"type":    openAIErrorType(mapped.Status),
 				},
 			})
 			fmt.Fprintf(w, "data: %s\n\n", data)
@@ -2111,12 +2133,17 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				return
 			}
 			lastErr = err
-			excluded[account.ID] = true
-			// Integrity failures are upstream hiccups, not account faults.
-			if !isStreamIntegrityError(err) {
-				h.handleAccountFailure(account, err)
+			action := h.recoverFromUpstreamError(account, err, refreshed)
+			if action == upstreamRetrySameAccount && !responseStarted {
+				retryAccount = account
+				attempt--
+				continue
 			}
+			excluded[account.ID] = true
 			if !responseStarted {
+				if action == upstreamStopRetrying {
+					break
+				}
 				continue
 			}
 			h.recordFailureWithDetails("openai", model, account.ID, err)
@@ -2177,13 +2204,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	if lastErr == nil {
-		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
-		return
-	}
-
-	h.recordFailureWithDetails("openai", model, "", lastErr)
-	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
+	h.writeOpenAIUpstreamFailure(w, "openai", model, lastErr)
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
@@ -2192,8 +2213,14 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 	var lastErr error
 	reqStart := time.Now()
 
+	refreshed := make(map[string]bool)
+	var retryAccount *config.Account
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded)
+		account := retryAccount
+		retryAccount = nil
+		if account == nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -2254,10 +2281,15 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 				return
 			}
 			lastErr = err
+			action := h.recoverFromUpstreamError(account, err, refreshed)
+			if action == upstreamRetrySameAccount {
+				retryAccount = account
+				attempt--
+				continue
+			}
 			excluded[account.ID] = true
-			// Integrity failures are upstream hiccups, not account faults.
-			if !isStreamIntegrityError(err) {
-				h.handleAccountFailure(account, err)
+			if action == upstreamStopRetrying {
+				break
 			}
 			continue
 		}
@@ -2288,13 +2320,7 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	if lastErr == nil {
-		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
-		return
-	}
-
-	h.recordFailureWithDetails("openai", model, "", lastErr)
-	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
+	h.writeOpenAIUpstreamFailure(w, "openai", model, lastErr)
 }
 
 func (h *Handler) sendOpenAIError(w http.ResponseWriter, status int, errType, message string) {

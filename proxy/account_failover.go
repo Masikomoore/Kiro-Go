@@ -5,6 +5,7 @@ import (
 	"kiro-go/config"
 	"kiro-go/logger"
 	"strings"
+	"time"
 )
 
 const maxAccountRetryAttempts = 3
@@ -156,12 +157,66 @@ func (h *Handler) disableAccountOverage(account *config.Account) {
 	h.pool.Reload()
 }
 
+// authFailureCooldown parks an account after a 401/403 that is neither an
+// invalid bearer token nor a suspension. Such responses are often transient
+// permission or propagation errors, so the account is not banned.
+const authFailureCooldown = 10 * time.Minute
+
+// refreshAccountInfoAsync re-reads usage limits after a quota error so the pool
+// sees the exhausted quota and its reset date. Tests replace it.
+var refreshAccountInfoAsync = func(h *Handler, account config.Account) {
+	go func() {
+		info, err := RefreshAccountInfo(&account)
+		if err != nil {
+			logger.Warnf("[AccountFailover] Failed to refresh usage for %s after quota error: %v", account.Email, err)
+			return
+		}
+		config.UpdateAccountInfo(account.ID, *info)
+		h.pool.Reload()
+	}()
+}
+
+// handleAccountFailure updates account state after a failed upstream call.
+// Request-scoped failures leave the account untouched.
 func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 	if account == nil || err == nil {
 		return
 	}
 
-	errMsg := err.Error()
+	switch classifyUpstreamError(err) {
+	case upstreamErrIntegrity, upstreamErrClientInvalid, upstreamErrContextTooLong,
+		upstreamErrInvalidModel, upstreamErrProfileRequired:
+		return
+	case upstreamErrSuspended:
+		h.disableAccount(account, "BANNED", "AWS temporarily suspended - unusual user activity detected")
+	case upstreamErrTokenInvalid:
+		h.disableAccount(account, "BANNED", "Authentication failed - token invalid or expired")
+	case upstreamErrAuth:
+		h.pool.SetCooldown(account.ID, time.Now().Add(authFailureCooldown))
+	case upstreamErrAccountThrottled:
+		cooldown := config.GetCompatConfig().AccountThrottleCooldown
+		h.pool.SetCooldown(account.ID, time.Now().Add(cooldown))
+		logger.Warnf("[AccountFailover] %s throttled by upstream (suspicious activity); cooling down %s", account.Email, cooldown)
+	case upstreamErrQuotaExhausted:
+		h.pool.MarkOverLimit(account.ID)
+		refreshAccountInfoAsync(h, *account)
+	case upstreamErrOverageLimit:
+		h.disableAccountOverage(account)
+		h.pool.RecordError(account.ID, false)
+	case upstreamErrRateLimited:
+		h.pool.RecordRateLimited(account.ID, upstreamRetryAfter(err))
+	case upstreamErrProfileUnavailable, upstreamErrTransient, upstreamErrGatewayTimeout:
+		// Profile ARN may be transiently unresolvable and upstream faults are
+		// not the credential's fault: short consecutive-error cooldown only.
+		h.pool.RecordError(account.ID, false)
+	default:
+		h.handleAccountFailureMessage(account, err.Error())
+	}
+}
+
+// handleAccountFailureMessage covers errors that carry no HTTP status, such as
+// token refresh failures, by matching their text.
+func (h *Handler) handleAccountFailureMessage(account *config.Account, errMsg string) {
 	switch {
 	case isOverageErrorMessage(errMsg):
 		h.disableAccountOverage(account)
@@ -171,13 +226,47 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 	case isSuspensionErrorMessage(errMsg):
 		h.disableAccount(account, "BANNED", "AWS temporarily suspended - unusual user activity detected")
 	case isProfileUnavailableErrorMessage(errMsg):
-		// Profile ARN may be transiently unresolvable (upstream blip, stale token).
-		// Treat as a soft failure: short cooldown so the next request rotates account,
-		// but never auto-disable — operators can still investigate via warn logs.
 		h.pool.RecordError(account.ID, false)
 	case isAuthErrorMessage(errMsg):
 		h.disableAccount(account, "BANNED", "Authentication failed - token invalid or expired")
 	default:
 		h.pool.RecordError(account.ID, false)
 	}
+}
+
+type upstreamAction int
+
+const (
+	upstreamTryNextAccount upstreamAction = iota
+	upstreamRetrySameAccount
+	upstreamStopRetrying
+)
+
+// recoverFromUpstreamError decides what an account loop does after a failed
+// call. A request-scoped failure stops the loop: every account would reject
+// the same request. An invalid bearer token gets one forced refresh per
+// account and a retry on the same account before the account is penalized.
+// refreshed records which accounts already used that refresh.
+func (h *Handler) recoverFromUpstreamError(account *config.Account, err error, refreshed map[string]bool) upstreamAction {
+	if account == nil || err == nil {
+		return upstreamTryNextAccount
+	}
+	class := classifyUpstreamError(err)
+	if class.isRequestScoped() {
+		logger.Warnf("[AccountFailover] %s error is caused by the request; not retrying: %v", class, err)
+		return upstreamStopRetrying
+	}
+	if class == upstreamErrTokenInvalid && !refreshed[account.ID] {
+		refreshed[account.ID] = true
+		ok, refreshErr := h.refreshAccountToken(account, true)
+		if refreshErr == nil && ok {
+			logger.Infof("[AccountFailover] Refreshed rejected token for %s; retrying same account", account.Email)
+			return upstreamRetrySameAccount
+		}
+		if refreshErr != nil {
+			logger.Warnf("[AccountFailover] Forced token refresh failed for %s: %v", account.Email, refreshErr)
+		}
+	}
+	h.handleAccountFailure(account, err)
+	return upstreamTryNextAccount
 }
