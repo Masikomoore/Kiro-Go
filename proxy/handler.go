@@ -4078,7 +4078,29 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"port":           config.GetPort(),
 		"host":           config.GetHost(),
 		"allowOverUsage": config.GetAllowOverUsage(),
+		// compat is what is stored (unset means default); compatEffective
+		// shows the values in force.
+		"compat":          config.GetCompatSettings(),
+		"compatEffective": compatEffectiveSettings(config.GetCompatConfig()),
 	})
+}
+
+func compatEffectiveSettings(c config.CompatConfig) map[string]interface{} {
+	return map[string]interface{}{
+		"accountThrottleCooldownMinutes": int(c.AccountThrottleCooldown / time.Minute),
+		"nativeReasoningEffort":          c.NativeReasoningEffort,
+		"toolChunkingHints":              c.ToolChunkingHints,
+		"thinkingSignature":              c.ThinkingSignature,
+		"toolUseXmlFilter":               c.ToolUseXMLFilter,
+		"imageDedup":                     c.ImageDedup,
+		"structuredToolHistory":          c.StructuredToolHistory,
+		"normalizeKiroToolParams":        c.NormalizeKiroToolParams,
+		"imageDownscale":                 c.ImageDownscale,
+		"builderIdPlaceholderArn":        c.BuilderIDPlaceholderArn,
+		"promptCacheMode":                c.PromptCacheMode,
+		"promptCacheScope":               c.PromptCacheScope,
+		"promptCacheMaxEntries":          c.PromptCacheMaxEntries,
+	}
 }
 
 func (h *Handler) apiGetPromptFilter(w http.ResponseWriter, r *http.Request) {
@@ -4130,11 +4152,20 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		RequireApiKey  *bool   `json:"requireApiKey,omitempty"`
 		Password       string  `json:"password,omitempty"`
 		AllowOverUsage *bool   `json:"allowOverUsage,omitempty"`
+		// Compat replaces the whole compat section when present.
+		Compat *config.CompatSettings `json:"compat,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
 		return
+	}
+	if req.Compat != nil {
+		if err := config.ValidateCompatSettings(*req.Compat); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	if err := config.UpdateSettingsPatch(req.ApiKey, req.RequireApiKey, req.Password); err != nil {
@@ -4152,6 +4183,14 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		// Rebuild the pool so over-quota accounts are re-included or dropped immediately.
 		h.pool.Reload()
+	}
+
+	if req.Compat != nil {
+		if err := config.UpdateCompatSettings(*req.Compat); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})

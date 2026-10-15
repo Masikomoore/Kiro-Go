@@ -115,6 +115,30 @@ API Key accounts call the Kiro CLI runtime (`https://runtime.{region}.kiro.dev/`
 
 Append a suffix (default `-thinking`) to the model name, e.g. `claude-sonnet-4.5-thinking`. Claude-compatible requests that include a top-level `thinking` config such as `{"type":"enabled","budget_tokens":2048}` or `{"type":"adaptive"}` also enable thinking mode automatically. Configure output format in the admin panel under Settings - Thinking Mode.
 
+Claude 4.6+, 5.x, and Fable models receive thinking through `additionalModelRequestFields.output_config.effort` (from `output_config.effort`, `budget_tokens`, or OpenAI `reasoning_effort`) instead of prompt tags.
+
+## Compatibility and Prompt-Cache Settings
+
+The `compat` section of `config.json` (also `GET`/`POST /admin/api/settings` with `{"compat": {...}}`) holds these switches. Omitted keys use the default.
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `nativeReasoningEffort` | `true` | Send `output_config.effort` to models that support it |
+| `toolChunkingHints` | `true` | Tell the model to split large Write/Edit/Bash payloads, which Kiro can truncate |
+| `thinkingSignature` | `true` | Add a placeholder signature to thinking blocks for SDK clients |
+| `toolUseXmlFilter` | `true` | Strip `<tool_use>` XML leaked into answer text |
+| `imageDedup` | `true` | Send each identical image once |
+| `accountThrottleCooldownMinutes` | `10` | Cooldown after a 429 "suspicious activity" response for that account |
+| `structuredToolHistory` | `false` | Experimental: keep tool calls structured in history with placeholder tool specs |
+| `normalizeKiroToolParams` | `false` | Experimental: rename Kiro-style arguments (`path`, `oldStr`, ...) on Claude Code tools |
+| `imageDownscale` | `false` | Experimental: shrink PNG/JPEG over 400KB or 1568px |
+| `builderIdPlaceholderArn` | `off` | `on_demand` or `always`: placeholder profileArn for Builder ID/social accounts |
+| `promptCacheMode` | `full` | `read_only` reports cache reads but no cache creation; `off` reports no cache fields |
+| `promptCacheScope` | `auto` | `auto`: Claude Code session, then API key, then account; `account`: per upstream account |
+| `promptCacheMaxEntries` | `20000` | LRU cap of the simulated prompt cache |
+
+Kiro returns no cache token counts, so prompt-cache usage is simulated from `cache_control` prefixes. Input, cache creation, and cache read always add up to the real input total. The simulated cache is saved to `prompt_cache.json` next to `config.json`.
+
 ## Outbound Proxy
 
 For users in restricted network regions, configure an outbound proxy in the admin panel under **Settings - Outbound Proxy Settings**. Supports SOCKS5 and HTTP proxies.
