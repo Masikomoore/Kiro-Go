@@ -2238,6 +2238,9 @@ func parseBase64Image(data, format string) *KiroImage {
 	if detected := sniffImageFormat(decoded); detected != "" {
 		format = detected
 	}
+	if smaller, smallerFormat, ok := downscaledImageBase64(decoded, format); ok {
+		data, format = smaller, smallerFormat
+	}
 
 	if format == "" {
 		format = "png"
