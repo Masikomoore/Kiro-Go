@@ -385,16 +385,15 @@ func CallKiroAPIContext(ctx context.Context, account *config.Account, payload *K
 		logger.Debugf("[KiroAPI] Request payload: %s", string(payloadJSON))
 	}
 
-	// Wrap OnToolUse to restore original tool names for the client.
-	if callback != nil && callback.OnToolUse != nil && len(payload.ToolNameMap) > 0 {
+	// Wrap OnToolUse to restore original tool names (and, when enabled,
+	// Claude Code argument names) for the client.
+	normalizeParams := normalizeKiroToolParamsEnabled()
+	if callback != nil && callback.OnToolUse != nil && (len(payload.ToolNameMap) > 0 || normalizeParams) {
 		originalOnToolUse := callback.OnToolUse
 		nameMap := payload.ToolNameMap
 		wrapped := *callback
 		wrapped.OnToolUse = func(tu KiroToolUse) {
-			if original, ok := nameMap[tu.Name]; ok {
-				tu.Name = original
-			}
-			originalOnToolUse(tu)
+			originalOnToolUse(restoreToolUse(tu, nameMap, normalizeParams))
 		}
 		callback = &wrapped
 	}
