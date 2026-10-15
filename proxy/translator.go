@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"kiro-go/config"
@@ -335,6 +334,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	// Keep structured tool results only while they answer the final assistant
 	// tool turn. Older tool cycles are flattened by sanitizeKiroHistory because
 	// Kiro rejects structured tool calls and results in history.
+	capToolResultTexts(currentToolResults)
 	currentToolResultIDs := collectToolResultIDs(currentToolResults)
 	keepCurrentToolResults := currentToolResultsMatchLastAssistant(history, currentToolResultIDs)
 
@@ -395,6 +395,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	payload.InferenceConfig = buildInferenceConfig(req.MaxTokens, req.Temperature, req.TopP)
 	payload.AdditionalModelRequestFields = reasoningFields
 
+	dedupeKiroImages(payload)
 	truncatePayloadToLimit(payload, systemPrompt != "")
 
 	return payload
@@ -1468,6 +1469,7 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 	// Keep structured tool results only while they answer the final assistant
 	// tool turn. Older tool cycles are flattened by sanitizeKiroHistory because
 	// Kiro rejects structured tool calls and results in history.
+	capToolResultTexts(currentToolResults)
 	currentToolResultIDs := collectToolResultIDs(currentToolResults)
 	keepCurrentToolResults := currentToolResultsMatchLastAssistant(history, currentToolResultIDs)
 
@@ -1522,6 +1524,7 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 	payload.InferenceConfig = buildInferenceConfig(req.MaxTokens, req.Temperature, req.TopP)
 	payload.AdditionalModelRequestFields = reasoningFields
 
+	dedupeKiroImages(payload)
 	truncatePayloadToLimit(payload, systemPrompt != "")
 
 	return payload
@@ -1883,6 +1886,15 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 		primingCount = 2
 	}
 
+	// Cheaper reductions first: old images, then the head and tail of very
+	// large history text. Whole turns are dropped only if that is not enough.
+	if dropOldHistoryImages(history, primingCount) && payloadByteSize(payload) <= maxPayloadBytes {
+		return
+	}
+	if compactHistoryText(history, primingCount) && payloadByteSize(payload) <= maxPayloadBytes {
+		return
+	}
+
 	priming := history[:primingCount]
 	conversation := history[primingCount:]
 
@@ -1986,7 +1998,7 @@ func truncateCurrentMessage(payload *KiroPayload) {
 			cur.Content = minimalFallbackUserContent
 			return
 		}
-		cur.Content = cur.Content[:budget]
+		cur.Content = truncateUTF8Bytes(cur.Content, budget)
 	}
 }
 
@@ -2217,14 +2229,14 @@ func parseBase64Image(data, format string) *KiroImage {
 	}
 
 	// 验证 base64
-	if _, err := base64.StdEncoding.DecodeString(data); err != nil {
-		if _, errRaw := base64.RawStdEncoding.DecodeString(data); errRaw != nil {
-			if _, errURL := base64.URLEncoding.DecodeString(data); errURL != nil {
-				if _, errRawURL := base64.RawURLEncoding.DecodeString(data); errRawURL != nil {
-					return nil
-				}
-			}
-		}
+	decoded, ok := decodeBase64Image(data)
+	if !ok {
+		return nil
+	}
+	// Trust the bytes over the declared media type: a PNG labelled image/jpeg
+	// makes the upstream reject the request.
+	if detected := sniffImageFormat(decoded); detected != "" {
+		format = detected
 	}
 
 	if format == "" {
