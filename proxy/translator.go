@@ -122,16 +122,24 @@ func MapModel(model string) string {
 // ==================== Claude API 类型 ====================
 
 type ClaudeRequest struct {
-	Model       string                `json:"model"`
-	Messages    []ClaudeMessage       `json:"messages"`
-	MaxTokens   int                   `json:"max_tokens"`
-	Temperature *float64              `json:"temperature,omitempty"`
-	TopP        *float64              `json:"top_p,omitempty"`
-	Stream      bool                  `json:"stream,omitempty"`
-	System      interface{}           `json:"system,omitempty"` // string or []SystemBlock
-	Thinking    *ClaudeThinkingConfig `json:"thinking,omitempty"`
-	Tools       []ClaudeTool          `json:"tools,omitempty"`
-	ToolChoice  interface{}           `json:"tool_choice,omitempty"`
+	Model        string                `json:"model"`
+	Messages     []ClaudeMessage       `json:"messages"`
+	MaxTokens    int                   `json:"max_tokens"`
+	Temperature  *float64              `json:"temperature,omitempty"`
+	TopP         *float64              `json:"top_p,omitempty"`
+	Stream       bool                  `json:"stream,omitempty"`
+	System       interface{}           `json:"system,omitempty"` // string or []SystemBlock
+	Thinking     *ClaudeThinkingConfig `json:"thinking,omitempty"`
+	OutputConfig *ClaudeOutputConfig   `json:"output_config,omitempty"`
+	Tools        []ClaudeTool          `json:"tools,omitempty"`
+	ToolChoice   interface{}           `json:"tool_choice,omitempty"`
+	Metadata     *ClaudeMetadata       `json:"metadata,omitempty"`
+}
+
+// ClaudeMetadata is the Anthropic request metadata. Claude Code puts its
+// session in user_id, either as a JSON string or as "..._session_<uuid>".
+type ClaudeMetadata struct {
+	UserID string `json:"user_id,omitempty"`
 }
 
 type ClaudeThinkingConfig struct {
@@ -235,8 +243,19 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	// folded into the top-level system prompt before history is built.
 	system, messages := foldInlineSystemMessages(req.System, req.Messages)
 
-	// 提取系统提示
-	systemPrompt := buildClaudeSystemPrompt(system, thinking)
+	explicitEffort := ""
+	if req.OutputConfig != nil {
+		explicitEffort = req.OutputConfig.Effort
+	}
+	reasoningFields := buildNativeReasoningFields(modelID, thinking, req.Thinking, explicitEffort)
+
+	// 提取系统提示。Models driven by output_config.effort take no prompt tags.
+	thinkingPrompt := ""
+	if thinking && reasoningFields == nil {
+		thinkingPrompt = thinkingModePromptFor(req.Thinking)
+	}
+	systemPrompt := buildClaudeSystemPrompt(system, thinkingPrompt)
+	systemPrompt = appendChunkingPolicy(systemPrompt, claudeToolNames(req.Tools))
 
 	// 构建历史消息
 	history := make([]KiroHistoryMessage, 0)
@@ -366,6 +385,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	}
 
 	payload.InferenceConfig = buildInferenceConfig(req.MaxTokens, req.Temperature, req.TopP)
+	payload.AdditionalModelRequestFields = reasoningFields
 
 	truncatePayloadToLimit(payload, systemPrompt != "")
 
@@ -405,16 +425,18 @@ func clampUnit(v float64) float64 {
 	return v
 }
 
-func buildClaudeSystemPrompt(system interface{}, thinking bool) string {
+// buildClaudeSystemPrompt filters the client system prompt and prefixes the
+// thinking prompt tags when thinkingPrompt is non-empty.
+func buildClaudeSystemPrompt(system interface{}, thinkingPrompt string) string {
 	systemPrompt := extractSystemPrompt(system)
 	systemPrompt = applyPromptFilters(systemPrompt)
-	if !thinking {
+	if thinkingPrompt == "" {
 		return systemPrompt
 	}
 	if systemPrompt == "" {
-		return ThinkingModePrompt
+		return thinkingPrompt
 	}
-	return ThinkingModePrompt + "\n\n" + systemPrompt
+	return thinkingPrompt + "\n\n" + systemPrompt
 }
 
 // applyPromptFilters applies all enabled prompt filter rules to the system prompt.
@@ -919,8 +941,7 @@ func convertClaudeTools(tools []ClaudeTool) ([]KiroToolWrapper, map[string]strin
 		if isNativeWebSearchTool(tool) {
 			continue
 		}
-		desc := tool.Description
-		desc = limitToolDescription(desc)
+		desc := describeKiroTool(tool.Name, tool.Description)
 		sanitized := shortenToolName(sanitizeToolName(tool.Name))
 		if sanitized != tool.Name {
 			nameMap[sanitized] = tool.Name
@@ -1190,8 +1211,10 @@ type OpenAIRequest struct {
 	MaxTokens   int             `json:"max_tokens,omitempty"`
 	Temperature *float64        `json:"temperature,omitempty"`
 	TopP        *float64        `json:"top_p,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
+	// ReasoningEffort maps to output_config.effort on models that support it.
+	ReasoningEffort string       `json:"reasoning_effort,omitempty"`
+	Stream          bool         `json:"stream,omitempty"`
+	Tools           []OpenAITool `json:"tools,omitempty"`
 }
 
 type OpenAIMessage struct {
@@ -1308,10 +1331,13 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 		}
 	}
 
-	// 如果启用 thinking 模式，注入 thinking 提示
-	if thinking {
+	reasoningFields := buildNativeReasoningFields(modelID, thinking, nil, req.ReasoningEffort)
+
+	// 如果启用 thinking 模式，注入 thinking 提示（原生 effort 模型除外）
+	if thinking && reasoningFields == nil {
 		systemPrompt = ThinkingModePrompt + "\n\n" + systemPrompt
 	}
+	systemPrompt = appendChunkingPolicy(systemPrompt, openAIToolNames(req.Tools))
 
 	// 构建历史消息
 	history := make([]KiroHistoryMessage, 0)
@@ -1482,6 +1508,7 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 	}
 
 	payload.InferenceConfig = buildInferenceConfig(req.MaxTokens, req.Temperature, req.TopP)
+	payload.AdditionalModelRequestFields = reasoningFields
 
 	truncatePayloadToLimit(payload, systemPrompt != "")
 
@@ -2210,8 +2237,7 @@ func convertOpenAITools(tools []OpenAITool) []KiroToolWrapper {
 		if tool.Type != "function" {
 			continue
 		}
-		desc := tool.Function.Description
-		desc = limitToolDescription(desc)
+		desc := describeKiroTool(tool.Function.Name, tool.Function.Description)
 		name := shortenToolName(tool.Function.Name)
 		if strings.TrimSpace(name) == "" {
 			// Kiro rejects tools with empty names; skip unusable specs.

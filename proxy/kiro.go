@@ -192,6 +192,10 @@ type KiroPayload struct {
 	ProfileArn      string           `json:"profileArn,omitempty"`
 	InferenceConfig *InferenceConfig `json:"inferenceConfig,omitempty"`
 
+	// AdditionalModelRequestFields carries native reasoning controls such as
+	// output_config.effort. CallKiroAPIContext adapts it per endpoint.
+	AdditionalModelRequestFields map[string]interface{} `json:"additionalModelRequestFields,omitempty"`
+
 	// ToolNameMap maps sanitized tool names (sent to Kiro) back to the
 	// original names supplied by the client. Used to restore original names
 	// in tool_use responses so the client can match them to its tool registry.
@@ -425,7 +429,10 @@ endpointLoop:
 			epURL = cliRuntimeURL(account)
 		}
 
+		baseFields := payload.AdditionalModelRequestFields
+		payload.AdditionalModelRequestFields = additionalFieldsForEndpoint(baseFields, isAPIKey)
 		reqBody, _ := json.Marshal(payload)
+		payload.AdditionalModelRequestFields = baseFields
 		host := ""
 		if parsedURL, parseErr := url.Parse(epURL); parseErr == nil {
 			host = parsedURL.Host
