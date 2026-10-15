@@ -993,6 +993,13 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 			if activeBlockIndex < 0 {
 				return
 			}
+			if activeBlockType == "thinking" && config.GetCompatConfig().ThinkingSignature {
+				sse.Send("content_block_delta", map[string]interface{}{
+					"type":  "content_block_delta",
+					"index": activeBlockIndex,
+					"delta": map[string]string{"type": "signature_delta", "signature": thinkingSignaturePlaceholder},
+				})
+			}
 			sse.Send("content_block_stop", map[string]interface{}{
 				"type":  "content_block_stop",
 				"index": activeBlockIndex,

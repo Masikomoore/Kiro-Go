@@ -40,6 +40,14 @@ var modelAliases = []modelMapping{
 // (claude-sonnet-4-20250514) are not accidentally rewritten.
 var claudeVersionPattern = regexp.MustCompile(`claude-(opus|sonnet|haiku|fable|mythos)-(\d+)-(\d{1,2})\b`)
 
+// thinkingSignaturePlaceholder is the signature on thinking blocks sent to
+// clients. Kiro never returns an Anthropic signature, and Anthropic SDK based
+// clients reject a replayed thinking block without one ("The content[].thinking
+// in the thinking mode must be passed back to the API"). The value only travels
+// between client and proxy: history conversion reads the thinking text, never
+// the signature. It is deliberately not a real-looking signature.
+const thinkingSignaturePlaceholder = "thinking-signature-placeholder"
+
 // Thinking 模式提示
 const ThinkingModePrompt = `<thinking_mode>enabled</thinking_mode>
 <max_thinking_length>200000</max_thinking_length>`
@@ -1150,10 +1158,14 @@ func KiroToClaudeResponse(content, thinkingContent string, includeEmptyThinkingB
 	blocks := make([]ClaudeContentBlock, 0)
 
 	if thinkingContent != "" || includeEmptyThinkingBlock {
-		blocks = append(blocks, ClaudeContentBlock{
+		block := ClaudeContentBlock{
 			Type:     "thinking",
 			Thinking: thinkingContent,
-		})
+		}
+		if config.GetCompatConfig().ThinkingSignature {
+			block.Signature = thinkingSignaturePlaceholder
+		}
+		blocks = append(blocks, block)
 	}
 
 	if content != "" {

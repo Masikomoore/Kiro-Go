@@ -617,6 +617,7 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 	}
 	callback = &trackedCallback
 	rewriter := newOutputRewriter(outputRewriteRulesFn())
+	xmlFilter := newToolUseXMLFilter(config.GetCompatConfig().ToolUseXMLFilter)
 	rewriteFlushed := false
 	flushRewrite := func() {
 		if rewriteFlushed || callback.OnText == nil {
@@ -624,6 +625,10 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 			return
 		}
 		rewriteFlushed = true
+		if tail := rewriter.push(xmlFilter.flush(), false); tail != "" {
+			emitted = true
+			callback.OnText(tail, false)
+		}
 		for _, thinking := range []bool{false, true} {
 			if text := rewriter.flush(thinking); text != "" {
 				emitted = true
@@ -696,7 +701,7 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 				sawOutput = true
 				sawAnswer = true
 				if callback.OnText != nil {
-					if text := rewriter.push(content, false); text != "" {
+					if text := rewriter.push(xmlFilter.push(content), false); text != "" {
 						emitted = true
 						callback.OnText(text, false)
 					}
