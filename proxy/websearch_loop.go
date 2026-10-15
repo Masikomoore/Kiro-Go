@@ -34,7 +34,7 @@ type webSearchRoundOutcome struct {
 }
 
 // runWebSearchLoop is the mixed-tools entry point.
-func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, req *ClaudeRequest, thinking bool, estimatedInputTokens int, apiKeyID string) {
+func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, req *ClaudeRequest, thinking bool, estimatedInputTokens int, apiKeyID string, cacheProfile *promptCacheProfile) {
 	// Working copy of messages we will mutate as we feed search results back.
 	working := *req
 	working.Messages = append([]ClaudeMessage(nil), req.Messages...)
@@ -126,11 +126,13 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, totalCredits)
 		h.recordSuccessLog("claude", req.Model, lastAccountID, inputTokens+outputTokens, totalCredits, time.Since(reqStart).Milliseconds())
 
+		report := h.commitPromptCache(lastAccountID, cacheProfile)
+
 		if req.Stream {
-			h.renderWebSearchLoopSSE(w, req.Model, content, stopReason, inputTokens, outputTokens)
+			h.renderWebSearchLoopSSE(w, req.Model, content, stopReason, inputTokens, outputTokens, report)
 			return
 		}
-		h.renderWebSearchLoopJSON(w, req.Model, content, stopReason, inputTokens, outputTokens)
+		h.renderWebSearchLoopJSON(w, req.Model, content, stopReason, inputTokens, outputTokens, report)
 		return
 	}
 
@@ -448,6 +450,7 @@ func (h *Handler) renderWebSearchLoopJSON(
 	content []map[string]interface{},
 	stopReason string,
 	inputTokens, outputTokens int,
+	report promptCacheReport,
 ) {
 	messageID := "msg_" + strings.ReplaceAll(uuid.New().String(), "-", "")
 	if len(messageID) > 4+24 {
@@ -461,12 +464,7 @@ func (h *Handler) renderWebSearchLoopJSON(
 		"content":       content,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
-		"usage": map[string]interface{}{
-			"input_tokens":                inputTokens,
-			"output_tokens":               outputTokens,
-			"cache_creation_input_tokens": 0,
-			"cache_read_input_tokens":     0,
-		},
+		"usage":         report.usageMap(inputTokens, outputTokens, false),
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -478,6 +476,7 @@ func (h *Handler) renderWebSearchLoopSSE(
 	content []map[string]interface{},
 	stopReason string,
 	inputTokens, outputTokens int,
+	report promptCacheReport,
 ) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -504,12 +503,7 @@ func (h *Handler) renderWebSearchLoopSSE(
 			"content":       []interface{}{},
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage": map[string]interface{}{
-				"input_tokens":                inputTokens,
-				"output_tokens":               0,
-				"cache_creation_input_tokens": 0,
-				"cache_read_input_tokens":     0,
-			},
+			"usage":         report.usageMap(inputTokens, 0, false),
 		},
 	})
 
@@ -580,7 +574,7 @@ func (h *Handler) renderWebSearchLoopSSE(
 	h.sendSSE(w, flusher, "message_delta", map[string]interface{}{
 		"type":  "message_delta",
 		"delta": map[string]interface{}{"stop_reason": stopReason},
-		"usage": map[string]interface{}{"output_tokens": outputTokens},
+		"usage": report.usageMap(inputTokens, outputTokens, false),
 	})
 	h.sendSSE(w, flusher, "message_stop", map[string]interface{}{
 		"type": "message_stop",

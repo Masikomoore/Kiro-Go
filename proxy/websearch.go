@@ -502,7 +502,7 @@ func buildWebSearchContentBlocks(query, toolUseID string, results *WebSearchResu
 // ==================== Pure-path handler ====================
 
 // handleWebSearchRequest serves pure native web_search requests via MCP.
-func (h *Handler) handleWebSearchRequest(w http.ResponseWriter, req *ClaudeRequest, estimatedInputTokens int, apiKeyID string) {
+func (h *Handler) handleWebSearchRequest(w http.ResponseWriter, req *ClaudeRequest, estimatedInputTokens int, apiKeyID string, cacheProfile *promptCacheProfile) {
 	query := extractSearchQuery(req)
 	if query == "" {
 		h.sendClaudeError(w, 400, "invalid_request_error", "Unable to extract search query from message")
@@ -551,9 +551,10 @@ func (h *Handler) handleWebSearchRequest(w http.ResponseWriter, req *ClaudeReque
 	}
 	h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, 0)
 	h.recordSuccessLog("claude", req.Model, accountID, inputTokens+outputTokens, 0, time.Since(reqStart).Milliseconds())
+	report := h.commitPromptCache(accountID, cacheProfile)
 
 	if req.Stream {
-		h.streamWebSearchSSE(w, req.Model, query, toolUseID, results, inputTokens, outputTokens)
+		h.streamWebSearchSSE(w, req.Model, query, toolUseID, results, inputTokens, outputTokens, report)
 		return
 	}
 
@@ -571,15 +572,7 @@ func (h *Handler) handleWebSearchRequest(w http.ResponseWriter, req *ClaudeReque
 		"content":       content,
 		"stop_reason":   "end_turn",
 		"stop_sequence": nil,
-		"usage": map[string]interface{}{
-			"input_tokens":                inputTokens,
-			"output_tokens":               outputTokens,
-			"cache_creation_input_tokens": 0,
-			"cache_read_input_tokens":     0,
-			"server_tool_use": map[string]interface{}{
-				"web_search_requests": 1,
-			},
-		},
+		"usage":         report.usageMap(inputTokens, outputTokens, true),
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -591,6 +584,7 @@ func (h *Handler) streamWebSearchSSE(
 	model, query, toolUseID string,
 	results *WebSearchResults,
 	inputTokens, outputTokens int,
+	report promptCacheReport,
 ) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -618,12 +612,7 @@ func (h *Handler) streamWebSearchSSE(
 			"content":       []interface{}{},
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage": map[string]interface{}{
-				"input_tokens":                inputTokens,
-				"output_tokens":               0,
-				"cache_creation_input_tokens": 0,
-				"cache_read_input_tokens":     0,
-			},
+			"usage":         report.usageMap(inputTokens, 0, false),
 		},
 	})
 
@@ -697,12 +686,7 @@ func (h *Handler) streamWebSearchSSE(
 	h.sendSSE(w, flusher, "message_delta", map[string]interface{}{
 		"type":  "message_delta",
 		"delta": map[string]interface{}{"stop_reason": "end_turn"},
-		"usage": map[string]interface{}{
-			"output_tokens": outputTokens,
-			"server_tool_use": map[string]interface{}{
-				"web_search_requests": 1,
-			},
-		},
+		"usage": report.usageMap(inputTokens, outputTokens, true),
 	})
 	h.sendSSE(w, flusher, "message_stop", map[string]interface{}{
 		"type": "message_stop",

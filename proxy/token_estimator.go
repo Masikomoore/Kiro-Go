@@ -116,6 +116,8 @@ func estimateClaudeValueTokens(v interface{}) int {
 			if content, ok := value["content"]; ok {
 				return estimateClaudeValueTokens(content)
 			}
+		case "image", "image_url", "input_image":
+			return estimateImageBlockTokens(value)
 		}
 
 		total := 0

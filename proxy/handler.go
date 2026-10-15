@@ -11,6 +11,7 @@ import (
 	"kiro-go/logger"
 	"kiro-go/pool"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,6 +74,8 @@ type Handler struct {
 	startTime       int64
 	stopRefresh     chan struct{}
 	stopStatsSaver  chan struct{}
+	stopPromptCache chan struct{}
+	shutdownOnce    sync.Once
 	// 模型缓存
 	cachedModels       []ModelInfo
 	modelsCacheMu      sync.RWMutex
@@ -290,6 +293,7 @@ func NewHandler() *Handler {
 		startTime:            time.Now().Unix(),
 		stopRefresh:          make(chan struct{}),
 		stopStatsSaver:       make(chan struct{}),
+		stopPromptCache:      make(chan struct{}),
 		promptCache:          newPromptCacheTracker(defaultPromptCacheTTL),
 		microsoftSelections:  make(map[string]*microsoftProfileSelection),
 		microsoftCanceled:    make(map[string]time.Time),
@@ -301,7 +305,19 @@ func NewHandler() *Handler {
 	go h.backgroundStatsSaver()
 	// 清理过期的 stored responses（>30 天）
 	go purgeExpiredResponses(responsesDefaultTTL)
+	// Simulated prompt cache survives restarts.
+	h.promptCache.startPersistence(filepath.Join(config.GetConfigDir(), "prompt_cache.json"), h.stopPromptCache)
 	return h
+}
+
+// Shutdown saves statistics and the simulated prompt cache. It is safe to
+// call more than once.
+func (h *Handler) Shutdown() {
+	h.shutdownOnce.Do(func() {
+		h.saveStats()
+		close(h.stopPromptCache)
+		h.promptCache.flush()
+	})
 }
 
 // backgroundRefresh 后台定时刷新账户信息
@@ -886,10 +902,13 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	cacheProfile := h.promptCache.BuildClaudeProfile(effectiveReq, estimatedInputTokens)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
+	if cacheProfile != nil {
+		cacheProfile.Scope = promptCacheScope(&req, r, apiKeyID)
+	}
 
 	// Pure native web_search: relay via Kiro MCP (generateAssistantResponse does not run it).
 	if hasWebSearchTool(&req) {
-		h.handleWebSearchRequest(w, &req, estimatedInputTokens, apiKeyID)
+		h.handleWebSearchRequest(w, &req, estimatedInputTokens, apiKeyID, cacheProfile)
 		return
 	}
 
@@ -897,7 +916,7 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	// and returns client tool_use blocks as-is.
 	if hasWebSearchAmongTools(&req) {
 		logger.Infof("[WebSearch] Mixed tools with native web_search, entering agentic loop")
-		h.runWebSearchLoop(r.Context(), w, &req, thinking, estimatedInputTokens, apiKeyID)
+		h.runWebSearchLoop(r.Context(), w, &req, thinking, estimatedInputTokens, apiKeyID, cacheProfile)
 		return
 	}
 
@@ -1708,13 +1727,14 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		}
 
 		resp := KiroToClaudeResponse(finalContent, responseThinkingContent, includeEmptyThinkingBlock, toolUses, inputTokens, outputTokens, model, upstreamStopReason)
-		resp.Usage.InputTokens = billedClaudeInputTokens(inputTokens, cacheUsage)
-		resp.Usage.CacheCreationInputTokens = cacheUsage.CacheCreationInputTokens
-		resp.Usage.CacheReadInputTokens = cacheUsage.CacheReadInputTokens
 		if cacheProfile != nil {
+			split := cacheUsage.split(inputTokens)
+			resp.Usage.InputTokens = split.Input
+			resp.Usage.CacheCreationInputTokens = split.Creation
+			resp.Usage.CacheReadInputTokens = split.Read
 			resp.Usage.CacheCreation = &ClaudeCacheCreationUsage{
-				Ephemeral5mInputTokens: cacheUsage.CacheCreation5mInputTokens,
-				Ephemeral1hInputTokens: cacheUsage.CacheCreation1hInputTokens,
+				Ephemeral5mInputTokens: split.Creation5m,
+				Ephemeral1hInputTokens: split.Creation1h,
 			}
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

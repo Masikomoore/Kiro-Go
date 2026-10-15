@@ -15,8 +15,11 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	_ "image/gif" // registers GIF for DecodeConfig in token estimates
 	"image/jpeg"
 	"image/png"
+	"math"
+	"strings"
 
 	"kiro-go/config"
 )
@@ -149,4 +152,55 @@ func boxDownscale(src *image.RGBA, dw, dh int) *image.RGBA {
 		}
 	}
 	return dst
+}
+
+const (
+	imageTokenPixelsPerToken = 750
+	imageTokenMaxPixels      = 1_150_000
+	imageTokenFallback       = 1600
+	// imageHeaderBase64Prefix is enough base64 to cover the headers that
+	// carry an image's dimensions.
+	imageHeaderBase64Prefix = 256 * 1024
+)
+
+// estimateImageBlockTokens follows Anthropic's image sizing: the image is
+// scaled to a 1568px long side and about 1.15 megapixels, then costs
+// width*height/750 tokens. Counting the base64 text instead would rate a
+// screenshot at hundreds of thousands of tokens.
+func estimateImageBlockTokens(block map[string]interface{}) int {
+	data := ""
+	if source, ok := block["source"].(map[string]interface{}); ok {
+		data, _ = source["data"].(string)
+	}
+	if data == "" {
+		if url, ok := block["image_url"].(map[string]interface{}); ok {
+			data, _ = url["url"].(string)
+		} else if url, ok := block["image_url"].(string); ok {
+			data = url
+		}
+	}
+	if i := strings.Index(data, ";base64,"); i >= 0 {
+		data = data[i+len(";base64,"):]
+	}
+	if data == "" {
+		return imageTokenFallback
+	}
+	if len(data) > imageHeaderBase64Prefix {
+		data = data[:imageHeaderBase64Prefix]
+	}
+	data = data[:len(data)-len(data)%4]
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return imageTokenFallback
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return imageTokenFallback
+	}
+	w, h := fitLongSide(cfg.Width, cfg.Height, maxImageLongSide)
+	if pixels := w * h; pixels > imageTokenMaxPixels {
+		scale := math.Sqrt(float64(imageTokenMaxPixels) / float64(pixels))
+		w, h = int(float64(w)*scale), int(float64(h)*scale)
+	}
+	return maxInt(1, (w*h+imageTokenPixelsPerToken-1)/imageTokenPixelsPerToken)
 }
