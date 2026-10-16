@@ -113,22 +113,24 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	kiroPayload := OpenAIToKiro(openaiReq, thinking)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
+	cacheProfile := h.openAICacheProfile(openaiReq, estimatedInputTokens, r, apiKeyID)
 	respID := generateResponseID()
 
 	if req.Stream {
 		h.handleResponsesStream(r.Context(), w, kiroPayload, actualModel, thinking, estimatedInputTokens,
-			apiKeyID, respID, &req, storedInputCopy, storeResponse)
+			apiKeyID, respID, &req, storedInputCopy, storeResponse, cacheProfile)
 		return
 	}
 
 	h.handleResponsesNonStream(r.Context(), w, kiroPayload, actualModel, thinking, estimatedInputTokens,
-		apiKeyID, respID, &req, storedInputCopy, storeResponse)
+		apiKeyID, respID, &req, storedInputCopy, storeResponse, cacheProfile)
 }
 
 func (h *Handler) handleResponsesNonStream(
 	ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool,
 	estimatedInputTokens int, apiKeyID, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
+	cacheProfile *promptCacheProfile,
 ) {
 	excluded := make(map[string]bool)
 	var lastErr error
@@ -231,7 +233,7 @@ func (h *Handler) handleResponsesNonStream(
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.recordSuccessLog("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
-		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req, upstreamStopReason)
+		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req, upstreamStopReason, h.commitOpenAICache(account.ID, cacheProfile, inputTokens))
 		respObj.StoredInput = storedInput
 		respObj.Instructions = req.Instructions
 
@@ -262,7 +264,7 @@ func mapResponsesCompletion(reason string) (status, incompleteReason string) {
 
 func buildResponsesObject(
 	id, model, content string, toolUses []KiroToolUse,
-	inputTokens, outputTokens int, req *ResponsesRequest, upstreamStopReason string,
+	inputTokens, outputTokens int, req *ResponsesRequest, upstreamStopReason string, cached int,
 ) *ResponsesObject {
 	output := make([]ResponseOutputItem, 0, 1+len(toolUses))
 
@@ -317,17 +319,26 @@ func buildResponsesObject(
 		Status:             status,
 		Model:              model,
 		Output:             output,
-		Usage:              ResponsesUsage{InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens},
+		Usage:              responsesUsage(inputTokens, outputTokens, cached),
 		PreviousResponseID: req.PreviousResponseID,
 		Metadata:           req.Metadata,
 		IncompleteDetails:  incompleteDetails,
 	}
 }
 
+func responsesUsage(inputTokens, outputTokens, cached int) ResponsesUsage {
+	usage := ResponsesUsage{InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens}
+	if cached > 0 {
+		usage.InputTokensDetails = &ResponsesInputTokensDetails{CachedTokens: cached}
+	}
+	return usage
+}
+
 func (h *Handler) handleResponsesStream(
 	ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool,
 	estimatedInputTokens int, apiKeyID, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
+	cacheProfile *promptCacheProfile,
 ) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -633,7 +644,7 @@ func (h *Handler) handleResponsesStream(
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.recordSuccessLog("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
-		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req, upstreamStopReason)
+		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req, upstreamStopReason, h.commitOpenAICache(account.ID, cacheProfile, inputTokens))
 		respObj.CreatedAt = createdAt
 		respObj.StoredInput = storedInput
 		respObj.Instructions = req.Instructions

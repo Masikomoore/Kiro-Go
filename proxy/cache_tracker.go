@@ -199,10 +199,24 @@ func (p *promptCacheProfile) scopeKey(accountID string) string {
 }
 
 func (t *promptCacheTracker) BuildClaudeProfile(req *ClaudeRequest, totalInputTokens int) *promptCacheProfile {
-	if config.GetCompatConfig().PromptCacheMode == config.PromptCacheModeOff {
+	compat := config.GetCompatConfig()
+	if req == nil || compat.PromptCacheMode == config.PromptCacheModeOff || !compat.SimulateAnthropicCache {
 		return nil
 	}
-	blocks := flattenClaudeCacheBlocks(req)
+	return t.profileFromBlocks(req.Model, totalInputTokens, flattenClaudeCacheBlocks(req))
+}
+
+// BuildOpenAIProfile simulates a read-only prefix cache for Chat Completions
+// and Responses requests, which do not send cache_control. The switch defaults
+// off. A hit does not change what Kiro charges.
+func (t *promptCacheTracker) BuildOpenAIProfile(req *OpenAIRequest, totalInputTokens int) *promptCacheProfile {
+	if req == nil || !config.GetCompatConfig().SimulateOpenAICache {
+		return nil
+	}
+	return t.profileFromBlocks(req.Model, totalInputTokens, flattenOpenAICacheBlocks(req))
+}
+
+func (t *promptCacheTracker) profileFromBlocks(model string, totalInputTokens int, blocks []cacheablePromptBlock) *promptCacheProfile {
 	if len(blocks) == 0 {
 		return nil
 	}
@@ -254,7 +268,7 @@ func (t *promptCacheTracker) BuildClaudeProfile(req *ClaudeRequest, totalInputTo
 	return &promptCacheProfile{
 		Breakpoints:      breakpoints,
 		TotalInputTokens: totalInputTokens,
-		Model:            req.Model,
+		Model:            model,
 	}
 }
 
@@ -549,6 +563,79 @@ func flattenClaudeCacheBlocks(req *ClaudeRequest) []cacheablePromptBlock {
 	return blocks
 }
 
+func flattenOpenAICacheBlocks(req *OpenAIRequest) []cacheablePromptBlock {
+	blocks := []cacheablePromptBlock{{
+		Value: map[string]interface{}{
+			"kind":  "openai_prelude",
+			"model": req.Model,
+		},
+	}}
+	for toolIndex, tool := range req.Tools {
+		blocks = append(blocks, cacheablePromptBlock{
+			Value: map[string]interface{}{
+				"kind":        "openai_tool",
+				"tool_index":  toolIndex,
+				"name":        tool.Function.Name,
+				"description": tool.Function.Description,
+				"parameters":  tool.Function.Parameters,
+			},
+			Tokens: estimateApproxTokens(tool.Function.Name) + estimateApproxTokens(tool.Function.Description) + estimateJSONTokens(tool.Function.Parameters),
+			TTL:    defaultPromptCacheTTL,
+		})
+	}
+	for messageIndex, msg := range req.Messages {
+		content := openAICacheContent(msg.Content)
+		calls := make([]map[string]string, 0, len(msg.ToolCalls))
+		tokens := estimateOpenAIContentTokens(content)
+		for _, call := range msg.ToolCalls {
+			calls = append(calls, map[string]string{
+				"name":      call.Function.Name,
+				"arguments": call.Function.Arguments,
+			})
+			tokens += estimateApproxTokens(call.Function.Name) + estimateApproxTokens(call.Function.Arguments)
+		}
+		blocks = append(blocks, cacheablePromptBlock{
+			Value: map[string]interface{}{
+				"kind":          "openai_message",
+				"message_index": messageIndex,
+				"role":          msg.Role,
+				"content":       content,
+				"tool_calls":    calls,
+			},
+			Tokens:       tokens,
+			TTL:          defaultPromptCacheTTL,
+			IsMessageEnd: true,
+		})
+	}
+	return blocks
+}
+
+// openAICacheContent drops reasoning parts. Their text changes every turn and
+// would make an otherwise stable prefix miss. tool_call ids are omitted by the
+// caller for the same reason.
+func openAICacheContent(content interface{}) interface{} {
+	parts, ok := content.([]interface{})
+	if !ok {
+		return content
+	}
+	kept := make([]interface{}, 0, len(parts))
+	for _, part := range parts {
+		block, ok := part.(map[string]interface{})
+		if !ok {
+			kept = append(kept, part)
+			continue
+		}
+		kind, _ := block["type"].(string)
+		switch strings.ToLower(kind) {
+		case "reasoning", "reasoning_text", "reasoning_content":
+			continue
+		default:
+			kept = append(kept, part)
+		}
+	}
+	return kept
+}
+
 func buildCachePreludeBlock(req *ClaudeRequest) cacheablePromptBlock {
 	prelude := map[string]interface{}{
 		"kind":        "request_prelude",
@@ -821,6 +908,55 @@ func (r promptCacheReport) usageMap(inputTokens, outputTokens int, webSearch boo
 // billedClaudeInputTokens is the uncached part of the reported input total.
 func billedClaudeInputTokens(inputTokens int, usage promptCacheUsage) int {
 	return usage.split(inputTokens).Input
+}
+
+// openAICachedTokens is the read portion of an OpenAI prompt. Creation is not
+// reported: these clients did not ask for cache writes, and Sub2API bills
+// prompt_tokens_details.cached_tokens as a cache read inside prompt_tokens.
+func openAICachedTokens(total int, usage promptCacheUsage) int {
+	usage.CacheCreationInputTokens = 0
+	usage.CacheCreation5mInputTokens = 0
+	usage.CacheCreation1hInputTokens = 0
+	read := usage.split(total).Read
+	if read < 0 {
+		return 0
+	}
+	if total >= 0 && read > total {
+		return total
+	}
+	return read
+}
+
+func openAIUsageMap(inputTokens, outputTokens, cached int) map[string]interface{} {
+	usage := map[string]interface{}{
+		"prompt_tokens":     inputTokens,
+		"completion_tokens": outputTokens,
+		"total_tokens":      inputTokens + outputTokens,
+	}
+	if cached > 0 {
+		usage["prompt_tokens_details"] = map[string]int{"cached_tokens": cached}
+	}
+	return usage
+}
+
+func (h *Handler) openAICacheProfile(req *OpenAIRequest, total int, r *http.Request, apiKeyID string) *promptCacheProfile {
+	if h == nil || h.promptCache == nil {
+		return nil
+	}
+	profile := h.promptCache.BuildOpenAIProfile(req, total)
+	if profile != nil {
+		profile.Scope = promptCacheScope(nil, r, apiKeyID)
+	}
+	return profile
+}
+
+func (h *Handler) commitOpenAICache(accountID string, profile *promptCacheProfile, inputTokens int) int {
+	if h == nil || h.promptCache == nil || profile == nil {
+		return 0
+	}
+	usage := h.promptCache.Compute(accountID, profile)
+	h.promptCache.Update(accountID, profile)
+	return openAICachedTokens(inputTokens, usage)
 }
 
 // buildClaudeUsageMap reports usage against the real input total: input,

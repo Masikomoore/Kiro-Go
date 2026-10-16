@@ -1577,11 +1577,16 @@
   }
 
   // Settings
+  let storedCompat = {};
   async function loadSettings() {
     const res = await api('/settings');
     const d = await res.json();
     $('requireApiKey').checked = d.requireApiKey;
     $('allowOverUsage').checked = d.allowOverUsage || false;
+    storedCompat = d.compat && typeof d.compat === 'object' ? d.compat : {};
+    const cacheEff = d.compatEffective || {};
+    $('simulateAnthropicCache').checked = cacheEff.simulateAnthropicCache !== false;
+    $('simulateOpenAICache').checked = cacheEff.simulateOpenAICache === true;
     await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
   }
@@ -1689,6 +1694,20 @@
     const allowOverUsage = $('allowOverUsage').checked;
     await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage }) });
     toast(t('settings.overUsageSaved'), 'success');
+  }
+  async function saveCacheSim() {
+    const compat = Object.assign({}, storedCompat);
+    compat.simulateAnthropicCache = $('simulateAnthropicCache').checked;
+    compat.simulateOpenAICache = $('simulateOpenAICache').checked;
+    try {
+      const res = await api('/settings', { method: 'POST', body: JSON.stringify({ compat }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.success === false) throw new Error(d.error || t('common.saveFailed'));
+      storedCompat = compat;
+      toast(t('settings.cacheSimSaved'), 'success');
+    } catch (e) {
+      toast((e && e.message) || t('common.saveFailed'), 'error');
+    }
   }
   async function changePassword() {
     const np = $('newPassword').value;
@@ -3230,6 +3249,7 @@
   function bindSettingsEvents() {
     $('saveRequireApiKeyBtn').addEventListener('click', saveRequireApiKey);
     $('saveOverUsageBtn').addEventListener('click', saveOverUsageConfig);
+    $('saveCacheSimBtn').addEventListener('click', saveCacheSim);
     $('saveThinkingBtn').addEventListener('click', saveThinkingConfig);
     $('saveEndpointBtn').addEventListener('click', saveEndpointConfig);
     $('changePasswordBtn').addEventListener('click', changePassword);

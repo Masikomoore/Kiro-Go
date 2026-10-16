@@ -17,8 +17,16 @@ func TestResolveCompatSettingsDefaults(t *testing.T) {
 		c.PromptCacheMode != PromptCacheModeFull || c.PromptCacheScope != PromptCacheScopeAuto || c.PromptCacheMaxEntries != 20000 {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
-
+	if !c.SimulateAnthropicCache || c.SimulateOpenAICache {
+		t.Fatalf("cache switches = anthropic %v openai %v", c.SimulateAnthropicCache, c.SimulateOpenAICache)
+	}
 	off := false
+	on := true
+	c = ResolveCompatSettings(CompatSettings{SimulateAnthropicCache: &off, SimulateOpenAICache: &on})
+	if c.SimulateAnthropicCache || !c.SimulateOpenAICache {
+		t.Fatalf("cache switch overrides = anthropic %v openai %v", c.SimulateAnthropicCache, c.SimulateOpenAICache)
+	}
+
 	c = ResolveCompatSettings(CompatSettings{ToolChunkingHints: &off, AccountThrottleCooldownMinutes: 3, PromptCacheMode: "READ_ONLY"})
 	if c.ToolChunkingHints || c.AccountThrottleCooldown != 3*time.Minute || c.PromptCacheMode != PromptCacheModeReadOnly {
 		t.Fatalf("overrides not applied: %+v", c)

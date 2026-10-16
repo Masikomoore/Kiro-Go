@@ -273,3 +273,172 @@ func TestClaudeSessionCacheHitsAfterAccountRotation(t *testing.T) {
 		t.Fatalf("same session must hit after rotating accounts, got %+v", second.Usage)
 	}
 }
+
+func TestAnthropicCacheSwitchOmitsUsage(t *testing.T) {
+	srv := &failoverTestServer{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv.record(r)
+		writeKiroSuccess(t, w, "ok")
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("cache-off")...)
+	off := false
+	if err := config.UpdateCompatSettings(config.CompatSettings{SimulateAnthropicCache: &off}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = config.UpdateCompatSettings(config.CompatSettings{}) })
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"model":      "claude-sonnet-4.5",
+		"max_tokens": 100,
+		"metadata":   map[string]interface{}{"user_id": `{"session_id":"off-session"}`},
+		"system": []interface{}{map[string]interface{}{
+			"type": "text", "text": strings.Repeat("Stable project rules for the assistant. ", 200),
+			"cache_control": map[string]interface{}{"type": "ephemeral"},
+		}},
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+	})
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		h.handleClaudeMessages(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body))))
+		var resp ClaudeResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode %s: %v", rec.Body.String(), err)
+		}
+		if resp.Usage.CacheCreationInputTokens != 0 || resp.Usage.CacheReadInputTokens != 0 {
+			t.Fatalf("request %d leaked cache usage %+v", i, resp.Usage)
+		}
+	}
+}
+
+func openAICacheRequest(callID, userText string) *OpenAIRequest {
+	call := ToolCall{ID: callID, Type: "function"}
+	call.Function.Name = "read"
+	call.Function.Arguments = "{\"path\":\"README.md\"}"
+	return &OpenAIRequest{
+		Model: "claude-sonnet-4.5",
+		Messages: []OpenAIMessage{
+			{Role: "system", Content: strings.Repeat("Stable project rules for the assistant. ", 200)},
+			{Role: "user", Content: "inspect the repository"},
+			{Role: "assistant", ToolCalls: []ToolCall{call}},
+			{Role: "tool", ToolCallID: callID, Content: "file contents"},
+			{Role: "user", Content: userText},
+		},
+	}
+}
+
+func TestOpenAIProfileHitsWhenToolCallIDChanges(t *testing.T) {
+	on := true
+	useCompat(t, config.CompatSettings{SimulateOpenAICache: &on})
+	tracker := newPromptCacheTracker(time.Hour)
+	if tracker.BuildOpenAIProfile(openAICacheRequest("call-a", "summarize"), 0) == nil {
+		t.Fatal("switch on must build a profile")
+	}
+	first := tracker.BuildOpenAIProfile(openAICacheRequest("call-a", "summarize"), 0)
+	first.Scope = "key:one"
+	if tracker.Compute("acct", first).CacheReadInputTokens != 0 {
+		t.Fatal("first sighting is not a read")
+	}
+	tracker.Update("acct", first)
+	second := tracker.BuildOpenAIProfile(openAICacheRequest("call-b", "summarize"), 0)
+	second.Scope = "key:one"
+	got := tracker.Compute("acct", second)
+	cached := openAICachedTokens(got.PromptTotalTokens, got)
+	if cached <= 0 || cached > got.PromptTotalTokens {
+		t.Fatalf("cached=%d total=%d usage=%+v", cached, got.PromptTotalTokens, got)
+	}
+	tail := tracker.BuildOpenAIProfile(openAICacheRequest("call-b", "hi"), 0)
+	tail.Scope = "key:one"
+	tailUsage := tracker.Compute("acct", tail)
+	if openAICachedTokens(tailUsage.PromptTotalTokens, tailUsage) <= 0 {
+		t.Fatal("a new tail must still hit the earlier prefix")
+	}
+}
+
+func TestOpenAICacheSwitchDefaultsOff(t *testing.T) {
+	useCompat(t, config.CompatSettings{})
+	tracker := newPromptCacheTracker(time.Hour)
+	if tracker.BuildOpenAIProfile(openAICacheRequest("call-a", "summarize"), 0) != nil {
+		t.Fatal("OpenAI simulation must stay off until an admin enables it")
+	}
+	if tracker.BuildClaudeProfile(cachedSystemRequest("claude-sonnet-4.5"), 0) == nil {
+		t.Fatal("Anthropic simulation stays on by default")
+	}
+	off := false
+	if err := config.UpdateCompatSettings(config.CompatSettings{SimulateAnthropicCache: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if tracker.BuildClaudeProfile(cachedSystemRequest("claude-sonnet-4.5"), 0) != nil {
+		t.Fatal("Anthropic switch off must skip the profile")
+	}
+}
+
+func TestOpenAIChatUsageReportsCachedTokens(t *testing.T) {
+	srv := &failoverTestServer{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv.record(r)
+		writeKiroSuccess(t, w, "ok")
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("openai-cache")[0])
+	on := true
+	if err := config.UpdateCompatSettings(config.CompatSettings{SimulateOpenAICache: &on}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = config.UpdateCompatSettings(config.CompatSettings{}) })
+
+	send := func(callID, text string) (prompt, cached float64, hasDetails bool) {
+		raw, _ := json.Marshal(openAICacheRequest(callID, text))
+		rec := httptest.NewRecorder()
+		h.handleOpenAIChat(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(raw))))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Usage struct {
+				PromptTokens int `json:"prompt_tokens"`
+				Details      *struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Usage.Details != nil {
+			return float64(resp.Usage.PromptTokens), float64(resp.Usage.Details.CachedTokens), true
+		}
+		return float64(resp.Usage.PromptTokens), 0, false
+	}
+
+	prompt, cached, details := send("call-a", "summarize")
+	if details || cached != 0 || prompt <= 0 {
+		t.Fatalf("first usage prompt=%v cached=%v details=%v", prompt, cached, details)
+	}
+	prompt, cached, details = send("call-b", "summarize")
+	if !details || cached <= 0 || cached > prompt {
+		t.Fatalf("second usage prompt=%v cached=%v details=%v", prompt, cached, details)
+	}
+	_, cached, details = send("call-c", "hi")
+	if cached <= 0 {
+		t.Fatal("changed tail should still read the stable prefix")
+	}
+	short := `{"model":"claude-sonnet-4.5","messages":[{"role":"user","content":"hi"}]}`
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		h.handleOpenAIChat(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(short)))
+		var resp struct {
+			Usage struct {
+				Details *struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Usage.Details != nil && resp.Usage.Details.CachedTokens > 0 {
+			t.Fatalf("short request %d reported cache %+v", i, resp.Usage.Details)
+		}
+	}
+}

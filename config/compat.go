@@ -32,6 +32,11 @@ type CompatSettings struct {
 	PromptCacheMode       string `json:"promptCacheMode,omitempty"`
 	PromptCacheScope      string `json:"promptCacheScope,omitempty"`
 	PromptCacheMaxEntries int    `json:"promptCacheMaxEntries,omitempty"`
+
+	// Per-protocol simulation switches. Nil uses the default: Anthropic on,
+	// OpenAI off. These do not change what Kiro charges.
+	SimulateAnthropicCache *bool `json:"simulateAnthropicCache,omitempty"`
+	SimulateOpenAICache    *bool `json:"simulateOpenAICache,omitempty"`
 }
 
 const (
@@ -65,6 +70,8 @@ type CompatConfig struct {
 	PromptCacheMode         string
 	PromptCacheScope        string
 	PromptCacheMaxEntries   int
+	SimulateAnthropicCache  bool
+	SimulateOpenAICache     bool
 }
 
 func boolOrDefault(v *bool, def bool) bool {
@@ -90,6 +97,8 @@ func ResolveCompatSettings(s CompatSettings) CompatConfig {
 		PromptCacheMode:         PromptCacheModeFull,
 		PromptCacheScope:        PromptCacheScopeAuto,
 		PromptCacheMaxEntries:   defaultPromptCacheMaxEntries,
+		SimulateAnthropicCache:  boolOrDefault(s.SimulateAnthropicCache, true),
+		SimulateOpenAICache:     boolOrDefault(s.SimulateOpenAICache, false),
 	}
 	if s.AccountThrottleCooldownMinutes > 0 {
 		out.AccountThrottleCooldown = time.Duration(s.AccountThrottleCooldownMinutes) * time.Minute
