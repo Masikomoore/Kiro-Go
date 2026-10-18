@@ -939,7 +939,7 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	if cacheProfile != nil {
 		cacheProfile.Scope = promptCacheScope(&req, r, apiKeyID)
 	}
-	ctx := withCLITrial(withAccountAffinityKey(r.Context(), accountAffinityKey(&req, r, apiKeyID)), r)
+	ctx := withCachePointProbe(withCLITrial(withAccountAffinityKey(r.Context(), accountAffinityKey(&req, r, apiKeyID)), r), r)
 
 	// Pure native web_search: relay via Kiro MCP (generateAssistantResponse does not run it).
 	if hasWebSearchTool(&req) {

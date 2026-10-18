@@ -221,6 +221,14 @@ type KiroUserInputMessage struct {
 	Origin                  string                   `json:"origin"`
 	Images                  []KiroImage              `json:"images,omitempty"`
 	UserInputMessageContext *UserInputMessageContext `json:"userInputMessageContext,omitempty"`
+	// CachePoint marks a Kiro cache boundary after this message, as kiro-cli
+	// sends it. Only set by the X-Kiro-Go-CachePoint probe for now.
+	CachePoint *KiroCachePoint `json:"cachePoint,omitempty"`
+}
+
+// KiroCachePoint is the Kiro cache marker, {"type":"default"}.
+type KiroCachePoint struct {
+	Type string `json:"type"`
 }
 
 type UserInputMessageContext struct {
@@ -490,6 +498,9 @@ func callKiroAPIContextOnce(ctx context.Context, account *config.Account, payloa
 	isAPIKey := config.IsAPIKeyAccount(account)
 	if !isAPIKey && cliTrialRequested(ctx) && (len(endpoints) == 0 || endpoints[0].Origin != kiroCLIEndpoint.Origin) {
 		endpoints = append([]kiroEndpoint{kiroCLIEndpoint}, endpoints...)
+	}
+	if cachePointProbeRequested(ctx) {
+		payload.ConversationState.CurrentMessage.UserInputMessage.CachePoint = &KiroCachePoint{Type: "default"}
 	}
 
 	var lastErr error
@@ -1326,5 +1337,25 @@ func cliTrialRequested(ctx context.Context) bool {
 		return false
 	}
 	v, _ := ctx.Value(cliTrialCtxKey{}).(bool)
+	return v
+}
+
+type cachePointProbeCtxKey struct{}
+
+// withCachePointProbe marks a request that sent "X-Kiro-Go-CachePoint: 1".
+// That request's current message carries a Kiro cachePoint, to test whether
+// the upstream then reports cache token counts.
+func withCachePointProbe(ctx context.Context, r *http.Request) context.Context {
+	if r == nil || strings.TrimSpace(r.Header.Get("X-Kiro-Go-CachePoint")) != "1" {
+		return ctx
+	}
+	return context.WithValue(ctx, cachePointProbeCtxKey{}, true)
+}
+
+func cachePointProbeRequested(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(cachePointProbeCtxKey{}).(bool)
 	return v
 }
