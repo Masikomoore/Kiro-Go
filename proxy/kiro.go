@@ -293,6 +293,8 @@ type KiroStreamCallback struct {
 	// OnResponseBody runs once, on the first upstream payload byte. It is the
 	// signal that this attempt now owns the downstream response.
 	OnResponseBody func()
+	// OnRawEvent sees every decoded upstream event, for diagnostics only.
+	OnRawEvent func(eventType string, event map[string]interface{})
 }
 
 // ==================== API Call ====================
@@ -578,8 +580,15 @@ endpointLoop:
 				}
 			}
 			body := &firstByteReader{r: resp.Body, notify: onFirstByte}
-			emitted, err := parseEventStreamTracked(body, callback)
+			usageLog := newUpstreamUsageLog()
+			streamCallback := KiroStreamCallback{}
+			if callback != nil {
+				streamCallback = *callback
+			}
+			streamCallback.OnRawEvent = usageLog.observe
+			emitted, err := parseEventStreamTracked(body, &streamCallback)
 			resp.Body.Close()
+			usageLog.log(shortConversationID(payload), ep.Name)
 			logger.Infof("[KiroAPI] timing conv=%s account=%s endpoint=%s bytes=%d prep=%dms headers=%dms firstByte=%dms stream=%dms ok=%t",
 				shortConversationID(payload), accountEmailForLog(account), ep.Name, len(reqBody), prepDur.Milliseconds(), headersDur.Milliseconds(),
 				firstByteDur.Milliseconds(), time.Since(sentAt).Milliseconds(), err == nil)
@@ -772,6 +781,9 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 			return emitted, fmt.Errorf("%w: %s", errKiroEventStreamUpstream, detail)
 		}
 
+		if callback.OnRawEvent != nil {
+			callback.OnRawEvent(headers[":event-type"], event)
+		}
 		inputTokens, outputTokens = updateTokensFromEvent(event, inputTokens, outputTokens)
 
 		switch headers[":event-type"] {
