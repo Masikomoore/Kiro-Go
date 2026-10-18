@@ -20,11 +20,23 @@ import (
 const (
 	kiroRestAPIBase               = "https://codewhisperer.us-east-1.amazonaws.com"
 	profileArnUnsupportedCooldown = 24 * time.Hour
-	maxProfileResponseBytes       = 1 << 20
-	maxProfileErrorBytes          = 64 << 10
+	// profileArnFailureCooldown bounds how often a failed lookup is repeated.
+	// Resolution runs inline before every generation request, so without it a
+	// profile-less account paid for region probes and a token refresh each time.
+	profileArnFailureCooldown = time.Minute
+	maxProfileResponseBytes   = 1 << 20
+	maxProfileErrorBytes      = 64 << 10
 )
 
 var profileArnResolutionCooldowns sync.Map
+
+// profileArnCooldown is one entry in profileArnResolutionCooldowns. A nil err
+// marks a Builder ID account whose lookup is unsupported; a non-nil err is
+// returned again until the entry expires.
+type profileArnCooldown struct {
+	until time.Time
+	err   error
+}
 
 var (
 	kiroRegionPattern  = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$`)
@@ -266,24 +278,26 @@ func ResolveProfileArn(account *config.Account) (string, error) {
 		return profileArn, nil
 	}
 
-	profileLookupSuppressed := isProfileArnResolutionSuppressed(account)
-	var profileUnsupportedErr error
-	var profileUnsupported bool
-
-	if !profileLookupSuppressed {
-		// external_idp accounts have no authoritative AWS home region, so their
-		// candidate data planes are probed without changing Account.Region.
-		profileArn, err := resolveProfileArnAcrossRegions(account)
-		if err == nil && profileArn != "" {
-			if updateErr := config.UpdateAccountProfileArn(account.ID, profileArn); updateErr != nil {
-				logger.Warnf("[ProfileArn] Failed to cache profile ARN for %s: %v", account.Email, updateErr)
-			}
-			account.ProfileArn = profileArn
-			return profileArn, nil
+	// The refresh fallback below is a network round trip too, so a cooled-down
+	// account skips it as well as the profile probe.
+	if cooldown, ok := profileArnResolutionCooldownFor(account); ok {
+		if cooldown.err != nil {
+			return "", cooldown.err
 		}
-		profileUnsupportedErr = err
-		profileUnsupported = isBuilderIDProfileUnsupportedError(account, err)
+		return "", fmt.Errorf("profile ARN resolution skipped: previous Builder ID profile lookup was unsupported")
 	}
+
+	// external_idp accounts have no authoritative AWS home region, so their
+	// candidate data planes are probed without changing Account.Region.
+	profileArn, profileErr := resolveProfileArnAcrossRegions(account)
+	if profileErr == nil && profileArn != "" {
+		if updateErr := config.UpdateAccountProfileArn(account.ID, profileArn); updateErr != nil {
+			logger.Warnf("[ProfileArn] Failed to cache profile ARN for %s: %v", account.Email, updateErr)
+		}
+		account.ProfileArn = profileArn
+		return profileArn, nil
+	}
+	profileUnsupported := isBuilderIDProfileUnsupportedError(account, profileErr)
 
 	// AWS refresh responses can include profileArn. Microsoft external_idp
 	// refresh responses do not, and may rotate refresh_token; invoking refresh
@@ -300,16 +314,15 @@ func ResolveProfileArn(account *config.Account) (string, error) {
 			return refreshedArn, nil
 		}
 	}
-	if profileLookupSuppressed {
-		return "", fmt.Errorf("profile ARN resolution skipped: previous Builder ID profile lookup was unsupported")
-	}
 	if profileUnsupported {
 		suppressProfileArnResolution(account)
-		logger.Debugf("[ProfileArn] Builder ID profile lookup unsupported for %s: %v", accountEmailForLog(account), profileUnsupportedErr)
+		logger.Debugf("[ProfileArn] Builder ID profile lookup unsupported for %s: %v", accountEmailForLog(account), profileErr)
 		return "", fmt.Errorf("profile ARN unsupported for Builder ID account")
 	}
 
-	return "", fmt.Errorf("no available Kiro profile")
+	err := fmt.Errorf("no available Kiro profile")
+	storeProfileArnCooldown(account, profileArnCooldown{until: time.Now().Add(profileArnFailureCooldown), err: err})
+	return "", err
 }
 
 func isBuilderIDProfileUnsupportedError(account *config.Account, err error) bool {
@@ -338,28 +351,39 @@ func profileArnCooldownKey(account *config.Account) string {
 }
 
 func suppressProfileArnResolution(account *config.Account) {
+	storeProfileArnCooldown(account, profileArnCooldown{until: time.Now().Add(profileArnUnsupportedCooldown)})
+}
+
+func storeProfileArnCooldown(account *config.Account, cooldown profileArnCooldown) {
 	key := profileArnCooldownKey(account)
 	if key == "" {
 		return
 	}
-	profileArnResolutionCooldowns.Store(key, time.Now().Add(profileArnUnsupportedCooldown))
+	profileArnResolutionCooldowns.Store(key, cooldown)
 }
 
-func isProfileArnResolutionSuppressed(account *config.Account) bool {
+// profileArnResolutionCooldownFor returns the live cooldown for account and
+// drops an expired one.
+func profileArnResolutionCooldownFor(account *config.Account) (profileArnCooldown, bool) {
 	key := profileArnCooldownKey(account)
 	if key == "" {
-		return false
+		return profileArnCooldown{}, false
 	}
 	value, ok := profileArnResolutionCooldowns.Load(key)
 	if !ok {
-		return false
+		return profileArnCooldown{}, false
 	}
-	until, ok := value.(time.Time)
-	if !ok || time.Now().After(until) {
+	cooldown, ok := value.(profileArnCooldown)
+	if !ok || time.Now().After(cooldown.until) {
 		profileArnResolutionCooldowns.Delete(key)
-		return false
+		return profileArnCooldown{}, false
 	}
-	return true
+	return cooldown, true
+}
+
+func isProfileArnResolutionSuppressed(account *config.Account) bool {
+	_, ok := profileArnResolutionCooldownFor(account)
+	return ok
 }
 
 func isProfileArnResolutionSkippedError(err error) bool {
