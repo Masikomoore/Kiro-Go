@@ -415,6 +415,7 @@ func callKiroAPIContextOnce(ctx context.Context, account *config.Account, payloa
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	callStart := time.Now()
 	originalProfileArn := ""
 	if payload != nil {
 		originalProfileArn = payload.ProfileArn
@@ -458,6 +459,10 @@ func callKiroAPIContextOnce(ctx context.Context, account *config.Account, payloa
 			logger.Warnf("[ProfileArn] Failed to resolve profile ARN for %s: %v", accountEmailForLog(account), err)
 		}
 	}
+
+	// prepDur covers token-side work before the first upstream byte is sent,
+	// mainly profile ARN resolution, which can involve network calls.
+	prepDur := time.Since(callStart)
 
 	// Build endpoint list ordered by configuration / credential type.
 	endpoints := resolveKiroEndpoints(account)
@@ -525,6 +530,7 @@ endpointLoop:
 			req.Header.Set("Amz-Sdk-Request", fmt.Sprintf("attempt=%d; max=%d", streamAttempt, maxStreamAttemptsPerEndpoint))
 			req.Header.Set("Amz-Sdk-Invocation-Id", invocationID)
 
+			sentAt := time.Now()
 			resp, err := GetClientForProxy(ResolveAccountProxyURL(account)).Do(req)
 			if err != nil {
 				lastErr = err
@@ -551,12 +557,20 @@ endpointLoop:
 				continue endpointLoop
 			}
 
-			body := io.Reader(resp.Body)
-			if callback != nil && callback.OnResponseBody != nil {
-				body = &firstByteReader{r: resp.Body, notify: callback.OnResponseBody}
+			headersDur := time.Since(sentAt)
+			var firstByteDur time.Duration
+			onFirstByte := func() {
+				firstByteDur = time.Since(sentAt)
+				if callback != nil && callback.OnResponseBody != nil {
+					callback.OnResponseBody()
+				}
 			}
+			body := &firstByteReader{r: resp.Body, notify: onFirstByte}
 			emitted, err := parseEventStreamTracked(body, callback)
 			resp.Body.Close()
+			logger.Infof("[KiroAPI] timing account=%s endpoint=%s bytes=%d prep=%dms headers=%dms firstByte=%dms stream=%dms ok=%t",
+				accountEmailForLog(account), ep.Name, len(reqBody), prepDur.Milliseconds(), headersDur.Milliseconds(),
+				firstByteDur.Milliseconds(), time.Since(sentAt).Milliseconds(), err == nil)
 			if err == nil {
 				return nil
 			}
