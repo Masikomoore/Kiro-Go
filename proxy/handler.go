@@ -75,6 +75,7 @@ type Handler struct {
 	stopRefresh     chan struct{}
 	stopStatsSaver  chan struct{}
 	stopPromptCache chan struct{}
+	stopConfigSave  chan struct{}
 	shutdownOnce    sync.Once
 	// 模型缓存
 	cachedModels       []ModelInfo
@@ -294,6 +295,7 @@ func NewHandler() *Handler {
 		stopRefresh:          make(chan struct{}),
 		stopStatsSaver:       make(chan struct{}),
 		stopPromptCache:      make(chan struct{}),
+		stopConfigSave:       make(chan struct{}),
 		promptCache:          newPromptCacheTracker(defaultPromptCacheTTL),
 		microsoftSelections:  make(map[string]*microsoftProfileSelection),
 		microsoftCanceled:    make(map[string]time.Time),
@@ -303,6 +305,8 @@ func NewHandler() *Handler {
 	go h.backgroundRefresh()
 	// 启动后台统计保存 (每30秒保存一次)
 	go h.backgroundStatsSaver()
+	// Per-request usage counters are written in batches, not per request.
+	go h.backgroundConfigSaver(configSaveInterval)
 	// 清理过期的 stored responses（>30 天）
 	go purgeExpiredResponses(responsesDefaultTTL)
 	// Simulated prompt cache survives restarts.
@@ -317,7 +321,31 @@ func (h *Handler) Shutdown() {
 		h.saveStats()
 		close(h.stopPromptCache)
 		h.promptCache.flush()
+		close(h.stopConfigSave)
+		if err := config.FlushPendingSave(); err != nil {
+			logger.Warnf("[Config] Final save failed: %v", err)
+		}
 	})
+}
+
+// configSaveInterval is how often deferred config changes (API key usage,
+// account stats) reach disk. kiro-RS-Tool batches its usage writes the same way.
+const configSaveInterval = 5 * time.Second
+
+// backgroundConfigSaver flushes deferred config changes until Shutdown.
+func (h *Handler) backgroundConfigSaver(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := config.FlushPendingSave(); err != nil {
+				logger.Warnf("[Config] Deferred save failed: %v", err)
+			}
+		case <-h.stopConfigSave:
+			return
+		}
+	}
 }
 
 // backgroundRefresh 后台定时刷新账户信息

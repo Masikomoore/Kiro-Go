@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -362,13 +363,63 @@ func newUUID() string {
 }
 
 // Save persists the current configuration to the JSON file.
-// Uses indented formatting for human readability.
+// Uses indented formatting for human readability. Callers hold cfgLock for
+// writing, so the snapshot also covers any deferred change.
 func Save() error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(cfgPath, data, 0600)
+	saveFileMu.Lock()
+	defer saveFileMu.Unlock()
+	saveDirty.Store(false)
+	if err := os.WriteFile(cfgPath, data, 0600); err != nil {
+		saveDirty.Store(true)
+		return err
+	}
+	return nil
+}
+
+var (
+	// saveFileMu orders file writes, so a deferred flush whose snapshot was
+	// taken under the read lock can never land after a newer Save.
+	saveFileMu sync.Mutex
+	// saveDirty marks in-memory changes not yet written to disk.
+	saveDirty atomic.Bool
+)
+
+// markDirtyLocked records a change that FlushPendingSave writes later. It is
+// for per-request counters, which must not rewrite the whole file on the
+// request path.
+func markDirtyLocked() {
+	saveDirty.Store(true)
+}
+
+// FlushPendingSave writes the configuration if a deferred change is pending.
+// It marshals under the read lock, so request-path readers are not blocked.
+func FlushPendingSave() error {
+	if !saveDirty.Load() {
+		return nil
+	}
+	cfgLock.RLock()
+	if cfg == nil || !saveDirty.Swap(false) {
+		cfgLock.RUnlock()
+		return nil
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		saveDirty.Store(true)
+		cfgLock.RUnlock()
+		return err
+	}
+	saveFileMu.Lock()
+	cfgLock.RUnlock()
+	defer saveFileMu.Unlock()
+	if err := os.WriteFile(cfgPath, data, 0600); err != nil {
+		saveDirty.Store(true)
+		return err
+	}
+	return nil
 }
 
 // SetPassword updates the admin password.
@@ -948,7 +999,8 @@ func UpdateAccountStats(id string, requestCount, errorCount, totalTokens int, to
 			cfg.Accounts[i].TotalTokens = totalTokens
 			cfg.Accounts[i].TotalCredits = totalCredits
 			cfg.Accounts[i].LastUsed = lastUsed
-			return Save()
+			markDirtyLocked()
+			return nil
 		}
 	}
 	return nil
