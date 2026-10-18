@@ -60,3 +60,40 @@ func TestTruncationBreaksKiroHistoryPrefix(t *testing.T) {
 	}
 	t.Logf("client=ok kiro=%s dropped %d then %d turns", got, first.Shrink.DroppedTurns, second.Shrink.DroppedTurns)
 }
+
+// Claude Code moves its cache_control marker to the newest message every
+// turn; that must not read as a client-side change.
+func TestClientHashesIgnoreMovingCacheControl(t *testing.T) {
+	block := func(text string, marked bool) interface{} {
+		b := map[string]interface{}{"type": "text", "text": text}
+		if marked {
+			b["cache_control"] = map[string]interface{}{"type": "ephemeral"}
+		}
+		return b
+	}
+	prev := []ClaudeMessage{{Role: "user", Content: []interface{}{block("first", true)}}}
+	cur := []ClaudeMessage{
+		{Role: "user", Content: []interface{}{block("first", false)}},
+		{Role: "assistant", Content: "ok"},
+		{Role: "user", Content: []interface{}{block("second", true)}},
+	}
+	p, pn := clientMessageHashes(prev)
+	c, cn := clientMessageHashes(cur)
+	if got := prefixDivergence(p, c, pn, cn, false); got != "ok" {
+		t.Fatalf("moving cache_control must not count as a change, got %q", got)
+	}
+}
+
+func TestFirstPartDiffNamesTheChangedBlock(t *testing.T) {
+	prev := clientBlockSums(ClaudeMessage{Role: "user", Content: []interface{}{
+		map[string]interface{}{"type": "text", "text": "same"},
+		map[string]interface{}{"type": "tool_result", "tool_use_id": "a", "content": "long output"},
+	}})
+	cur := clientBlockSums(ClaudeMessage{Role: "user", Content: []interface{}{
+		map[string]interface{}{"type": "text", "text": "same"},
+		map[string]interface{}{"type": "tool_result", "tool_use_id": "a", "content": "short"},
+	}})
+	if got := firstPartDiff(prev, cur, true); !strings.HasPrefix(got, "b1:user.tool_result ") {
+		t.Fatalf("expected block 1 tool_result, got %q", got)
+	}
+}

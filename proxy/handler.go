@@ -1444,7 +1444,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		logPromptCacheUsage(model, cacheProfile, cacheUsage, inputTokens, outputTokens, credits)
+		logPromptCacheUsage(shortConversationID(payload), model, cacheProfile, cacheUsage, inputTokens, outputTokens, credits)
 		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
 		stopReason := mapClaudeStopReason(upstreamStopReason, len(toolUses))
@@ -1736,7 +1736,7 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		logPromptCacheUsage(model, cacheProfile, cacheUsage, inputTokens, outputTokens, credits)
+		logPromptCacheUsage(shortConversationID(payload), model, cacheProfile, cacheUsage, inputTokens, outputTokens, credits)
 		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
 		responseThinkingContent := rawThinkingContent

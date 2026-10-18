@@ -580,8 +580,8 @@ endpointLoop:
 			body := &firstByteReader{r: resp.Body, notify: onFirstByte}
 			emitted, err := parseEventStreamTracked(body, callback)
 			resp.Body.Close()
-			logger.Infof("[KiroAPI] timing account=%s endpoint=%s bytes=%d prep=%dms headers=%dms firstByte=%dms stream=%dms ok=%t",
-				accountEmailForLog(account), ep.Name, len(reqBody), prepDur.Milliseconds(), headersDur.Milliseconds(),
+			logger.Infof("[KiroAPI] timing conv=%s account=%s endpoint=%s bytes=%d prep=%dms headers=%dms firstByte=%dms stream=%dms ok=%t",
+				shortConversationID(payload), accountEmailForLog(account), ep.Name, len(reqBody), prepDur.Milliseconds(), headersDur.Milliseconds(),
 				firstByteDur.Milliseconds(), time.Since(sentAt).Milliseconds(), err == nil)
 			if err == nil {
 				return nil

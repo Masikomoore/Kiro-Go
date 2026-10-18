@@ -849,7 +849,7 @@ func (r promptCacheReport) usageMap(inputTokens, outputTokens int, webSearch boo
 // Kiro returns no cache token counts, so these lines are the data for
 // checking the simulation against what upstream actually charged. Session
 // and key IDs are not logged.
-func logPromptCacheUsage(model string, profile *promptCacheProfile, usage promptCacheUsage, inputTokens, outputTokens int, credits float64) {
+func logPromptCacheUsage(conv, model string, profile *promptCacheProfile, usage promptCacheUsage, inputTokens, outputTokens int, credits float64) {
 	kind, scope, breakpoints := "none", "-", 0
 	split := promptCacheSplit{Input: inputTokens}
 	if profile != nil {
@@ -862,8 +862,8 @@ func logPromptCacheUsage(model string, profile *promptCacheProfile, usage prompt
 		}
 		split = usage.split(inputTokens)
 	}
-	logger.Infof("[PromptCache] model=%s profile=%s scope=%s breakpoints=%d input=%d read=%d creation=%d total=%d output=%d credits=%.4f",
-		model, kind, scope, breakpoints, split.Input, split.Read, split.Creation, inputTokens, outputTokens, credits)
+	logger.Infof("[PromptCache] conv=%s model=%s profile=%s scope=%s breakpoints=%d input=%d read=%d creation=%d total=%d output=%d credits=%.4f",
+		conv, model, kind, scope, breakpoints, split.Input, split.Read, split.Creation, inputTokens, outputTokens, credits)
 }
 
 // billedClaudeInputTokens is the uncached part of the reported input total.

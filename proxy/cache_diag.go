@@ -26,12 +26,14 @@ const (
 )
 
 type cacheDiagEntry struct {
-	client     []uint64
-	clientNoID []uint64
-	kiro       []uint64
-	kiroNoID   []uint64
-	tools      uint64
-	seen       time.Time
+	clientParts [][]partSum
+	kiroParts   [][]partSum
+	client      []uint64
+	clientNoID  []uint64
+	kiro        []uint64
+	kiroNoID    []uint64
+	tools       uint64
+	seen        time.Time
 }
 
 type cacheDiagTracker struct {
@@ -53,11 +55,19 @@ func diagHash(v interface{}) uint64 {
 	return h.Sum64()
 }
 
-// clientMessageHashes hashes each client message as sent, and again with tool
-// IDs removed, so a divergence caused only by regenerated IDs is visible.
+func diagHashString(s string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(s))
+	return h.Sum64()
+}
+
+// clientMessageHashes hashes each client message in the cache tracker's
+// canonical form, which ignores cache_control (Claude Code moves its marker to
+// the newest message every turn). The second slice also drops tool IDs, so a
+// divergence caused only by regenerated IDs is visible.
 func clientMessageHashes(messages []ClaudeMessage) (full, noID []uint64) {
 	for _, msg := range messages {
-		full = append(full, diagHash(msg))
+		full = append(full, diagHashString(canonicalizeCacheValue(map[string]interface{}{"role": msg.Role, "content": msg.Content})))
 		content := msg.Content
 		if blocks, ok := content.([]interface{}); ok {
 			stripped := make([]interface{}, len(blocks))
@@ -66,9 +76,87 @@ func clientMessageHashes(messages []ClaudeMessage) (full, noID []uint64) {
 			}
 			content = stripped
 		}
-		noID = append(noID, diagHash(map[string]interface{}{"role": msg.Role, "content": content}))
+		noID = append(noID, diagHashString(canonicalizeCacheValue(map[string]interface{}{"role": msg.Role, "content": content})))
 	}
 	return full, noID
+}
+
+// partSum summarizes one content block or one part of a Kiro entry, so a
+// later request can name what changed without keeping the content.
+type partSum struct {
+	name string
+	hash uint64
+	size int
+}
+
+// clientBlockSums summarizes each content block of a client message in the
+// tracker's canonical form.
+func clientBlockSums(msg ClaudeMessage) []partSum {
+	var blocks []interface{}
+	switch c := msg.Content.(type) {
+	case []interface{}:
+		blocks = c
+	default:
+		blocks = []interface{}{map[string]interface{}{"type": "string", "text": c}}
+	}
+	out := make([]partSum, len(blocks))
+	for i, block := range blocks {
+		canon := canonicalizeCacheValue(block)
+		typ := "-"
+		if m, ok := block.(map[string]interface{}); ok {
+			typ, _ = m["type"].(string)
+		}
+		out[i] = partSum{name: msg.Role + "." + typ, hash: diagHashString(canon), size: len(canon)}
+	}
+	return out
+}
+
+// kiroPartSums summarizes the parts of a Kiro history entry.
+func kiroPartSums(entry KiroHistoryMessage) []partSum {
+	sum := func(name string, v interface{}) partSum {
+		raw, _ := json.Marshal(v)
+		return partSum{name: name, hash: diagHashString(string(raw)), size: len(raw)}
+	}
+	if u := entry.UserInputMessage; u != nil {
+		return []partSum{
+			sum("user.content", u.Content),
+			sum("user.images", u.Images),
+			sum("user.context", u.UserInputMessageContext),
+			sum("user.meta", []string{u.ModelID, u.Origin}),
+		}
+	}
+	if a := entry.AssistantResponseMessage; a != nil {
+		return []partSum{sum("assistant.content", a.Content), sum("assistant.toolUses", a.ToolUses)}
+	}
+	return nil
+}
+
+// firstPartDiff names the first differing part, e.g. "b1:user.tool_result
+// 812>790" for client blocks or "assistant.content 1200>1180" for Kiro parts.
+func firstPartDiff(prev, cur []partSum, indexed bool) string {
+	n := maxInt(len(prev), len(cur))
+	for i := 0; i < n; i++ {
+		var p, c partSum
+		if i < len(prev) {
+			p = prev[i]
+		}
+		if i < len(cur) {
+			c = cur[i]
+		}
+		if p.hash == c.hash && p.name == c.name {
+			continue
+		}
+		name := c.name
+		if name == "" {
+			name = p.name
+		}
+		label := name
+		if indexed {
+			label = "b" + strconv.Itoa(i) + ":" + name
+		}
+		return label + " " + strconv.Itoa(p.size) + ">" + strconv.Itoa(c.size)
+	}
+	return "same-parts"
 }
 
 // kiroHistoryHashes hashes each Kiro history entry, and again with tool use
@@ -133,6 +221,22 @@ func prefixDivergence(prev, cur, prevNoID, curNoID []uint64, first bool) string 
 // observe logs one [CacheDiag] line comparing this request with the previous
 // one of the same conversation, keyed by the Kiro conversation ID (derived
 // from the system prompt and the first user message).
+// divergenceIndex extracts I from "@I:kind", or -1.
+func divergenceIndex(div string) int {
+	if len(div) < 2 || div[0] != '@' {
+		return -1
+	}
+	end := 1
+	for end < len(div) && div[end] >= '0' && div[end] <= '9' {
+		end++
+	}
+	i, err := strconv.Atoi(div[1:end])
+	if err != nil {
+		return -1
+	}
+	return i
+}
+
 func (t *cacheDiagTracker) observe(req *ClaudeRequest, payload *KiroPayload) {
 	if t == nil || req == nil || payload == nil {
 		return
@@ -140,6 +244,14 @@ func (t *cacheDiagTracker) observe(req *ClaudeRequest, payload *KiroPayload) {
 	conv := payload.ConversationState.ConversationID
 	client, clientNoID := clientMessageHashes(req.Messages)
 	kiro, kiroNoID := kiroHistoryHashes(payload.ConversationState.History)
+	clientParts := make([][]partSum, len(req.Messages))
+	for i, msg := range req.Messages {
+		clientParts[i] = clientBlockSums(msg)
+	}
+	kiroParts := make([][]partSum, len(payload.ConversationState.History))
+	for i, entry := range payload.ConversationState.History {
+		kiroParts[i] = kiroPartSums(entry)
+	}
 	var tools uint64
 	if ctx := payload.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext; ctx != nil {
 		tools = diagHash(ctx.Tools)
@@ -164,7 +276,17 @@ func (t *cacheDiagTracker) observe(req *ClaudeRequest, payload *KiroPayload) {
 		}
 	}
 	prevClient, prevKiro := len(prev.client), len(prev.kiro)
-	t.entries[conv] = &cacheDiagEntry{client: client, clientNoID: clientNoID, kiro: kiro, kiroNoID: kiroNoID, tools: tools, seen: now}
+	clientDetail, kiroDetail := "", ""
+	if i := divergenceIndex(clientDiv); i >= 0 && i < len(prev.clientParts) && i < len(clientParts) {
+		clientDetail = "[" + firstPartDiff(prev.clientParts[i], clientParts[i], true) + "]"
+	}
+	if i := divergenceIndex(kiroDiv); i >= 0 && i < len(prev.kiroParts) && i < len(kiroParts) {
+		kiroDetail = "[" + firstPartDiff(prev.kiroParts[i], kiroParts[i], false) + "]"
+	}
+	t.entries[conv] = &cacheDiagEntry{
+		clientParts: clientParts, kiroParts: kiroParts,
+		client: client, clientNoID: clientNoID, kiro: kiro, kiroNoID: kiroNoID, tools: tools, seen: now,
+	}
 	if len(t.entries) > cacheDiagMaxEntries {
 		for k, e := range t.entries {
 			if now.Sub(e.seen) > cacheDiagTTL || k != conv {
@@ -181,11 +303,21 @@ func (t *cacheDiagTracker) observe(req *ClaudeRequest, payload *KiroPayload) {
 	if shrink == "" {
 		shrink = "none"
 	}
-	convShort := conv
-	if len(convShort) > 8 {
-		convShort = convShort[:8]
-	}
-	logger.Infof("[CacheDiag] conv=%s msgs=%d prev=%d client=%s hist=%d prevHist=%d kiro=%s tools=%s shrink=%s dropped=%d bytes=%d",
-		convShort, len(client), prevClient, clientDiv, len(kiro), prevKiro, kiroDiv, toolsState,
+	convShort := shortConversationID(payload)
+	logger.Infof("[CacheDiag] conv=%s msgs=%d prev=%d client=%s%s hist=%d prevHist=%d kiro=%s%s tools=%s shrink=%s dropped=%d bytes=%d",
+		convShort, len(client), prevClient, clientDiv, clientDetail, len(kiro), prevKiro, kiroDiv, kiroDetail, toolsState,
 		shrink, payload.Shrink.DroppedTurns, payload.Shrink.OriginalBytes)
+}
+
+// shortConversationID is the first 8 characters of the Kiro conversation ID,
+// used to tie timing, cache, and diagnostic log lines to one conversation.
+func shortConversationID(payload *KiroPayload) string {
+	if payload == nil {
+		return "-"
+	}
+	id := payload.ConversationState.ConversationID
+	if len(id) > 8 {
+		id = id[:8]
+	}
+	return id
 }
