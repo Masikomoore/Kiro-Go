@@ -325,7 +325,14 @@ func endpointsForAccount(account *config.Account) []kiroEndpoint {
 	if config.IsAPIKeyAccount(account) {
 		return []kiroEndpoint{kiroCLIEndpoint}
 	}
-	return getSortedEndpoints(config.GetPreferredEndpoint())
+	endpoints := getSortedEndpoints(config.GetPreferredEndpoint())
+	if config.GetCompatConfig().CLIEndpointFirst {
+		// Experimental: kirocc (d-kuro/kirocc) sends OAuth credentials to the
+		// CLI runtime and reads cache token counts from its metadataEvent.
+		// The IDE endpoints are kept as the fallback.
+		endpoints = append([]kiroEndpoint{kiroCLIEndpoint}, endpoints...)
+	}
+	return endpoints
 }
 
 // cliRuntimeURL builds the regional Kiro CLI runtime URL.
@@ -481,12 +488,21 @@ func callKiroAPIContextOnce(ctx context.Context, account *config.Account, payloa
 	// Build endpoint list ordered by configuration / credential type.
 	endpoints := resolveKiroEndpoints(account)
 	isAPIKey := config.IsAPIKeyAccount(account)
+	if !isAPIKey && cliTrialRequested(ctx) && (len(endpoints) == 0 || endpoints[0].Origin != kiroCLIEndpoint.Origin) {
+		endpoints = append([]kiroEndpoint{kiroCLIEndpoint}, endpoints...)
+	}
 
 	var lastErr error
 endpointLoop:
 	for epIndex, ep := range endpoints {
 		// Update the origin field for the selected endpoint.
 		payload.ConversationState.CurrentMessage.UserInputMessage.Origin = ep.Origin
+		// The CLI runtime speaks AWS JSON 1.0 for API keys and, with
+		// compat.cliEndpointFirst, for OAuth accounts trying it first.
+		isCLI := isAPIKey || ep.Origin == kiroCLIEndpoint.Origin
+		// An OAuth account on the CLI runtime is an experiment: any failure
+		// there falls back to the IDE endpoints instead of failing the account.
+		cliTrial := isCLI && !isAPIKey
 
 		// Target the profile's data-plane region; endpoint URLs are declared for us-east-1.
 		// API Key accounts use the CLI runtime host instead of IDE/Q hosts.
@@ -494,12 +510,12 @@ endpointLoop:
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if isAPIKey {
+		if isCLI {
 			epURL = cliRuntimeURL(account)
 		}
 
 		baseFields := payload.AdditionalModelRequestFields
-		payload.AdditionalModelRequestFields = additionalFieldsForEndpoint(baseFields, isAPIKey)
+		payload.AdditionalModelRequestFields = additionalFieldsForEndpoint(baseFields, isCLI)
 		reqBody, err := json.Marshal(payload)
 		payload.AdditionalModelRequestFields = baseFields
 		if err != nil {
@@ -522,7 +538,7 @@ endpointLoop:
 				lastErr = err
 				continue endpointLoop
 			}
-			if isAPIKey {
+			if isCLI {
 				req.Header.Set("Content-Type", "application/x-amz-json-1.0")
 			} else {
 				req.Header.Set("Content-Type", "application/json")
@@ -532,11 +548,11 @@ endpointLoop:
 				req.Header.Set("X-Amz-Target", ep.AmzTarget)
 			}
 			applyKiroBaseHeaders(req, account, headerValues)
-			if !isAPIKey {
+			if !isCLI {
 				req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 			}
 			// CLI captures use optout=false; IDE path keeps true.
-			if isAPIKey {
+			if isCLI {
 				req.Header.Set("x-amzn-codewhisperer-optout", "false")
 			} else {
 				req.Header.Set("x-amzn-codewhisperer-optout", "true")
@@ -549,6 +565,9 @@ endpointLoop:
 			if err != nil {
 				lastErr = err
 				logger.Warnf("[KiroAPI] Endpoint %s failed: %v", ep.Name, err)
+				if cliTrial && ctx.Err() == nil {
+					continue endpointLoop
+				}
 				if !isRetryableStreamError(err) {
 					return err
 				}
@@ -561,6 +580,10 @@ endpointLoop:
 				httpErr := newKiroHTTPError(resp, ep.Name, errBody)
 				lastErr = httpErr
 				class := classifyKiroHTTPError(resp.StatusCode, httpErr.Body)
+				if cliTrial {
+					logger.Warnf("[KiroAPI] CLI runtime trial for %s failed (%s), falling back: %v", accountEmailForLog(account), class, httpErr)
+					continue endpointLoop
+				}
 				// Only a plain 429 or an upstream fault can succeed on another
 				// endpoint. Request, credential, and account-level failures repeat
 				// there, so they go straight back to the account loop.
@@ -605,6 +628,10 @@ endpointLoop:
 			// attempts even if no network bytes were flushed yet.
 			if emitted {
 				return err
+			}
+			if cliTrial {
+				logger.Warnf("[KiroAPI] CLI runtime trial stream for %s failed before output, falling back: %v", accountEmailForLog(account), err)
+				continue endpointLoop
 			}
 			if !isRetryableStreamError(err) {
 				return err
@@ -1279,4 +1306,25 @@ func parseEventStreamHeaders(data []byte) (map[string]string, error) {
 		offset += valueLength
 	}
 	return headers, nil
+}
+
+type cliTrialCtxKey struct{}
+
+// withCLITrial marks a request whose client sent "X-Kiro-Go-Endpoint: cli":
+// that one request tries the CLI runtime first, with the same fallback as
+// compat.cliEndpointFirst. It lets an operator probe the CLI runtime without
+// switching every request over.
+func withCLITrial(ctx context.Context, r *http.Request) context.Context {
+	if r == nil || !strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Kiro-Go-Endpoint")), "cli") {
+		return ctx
+	}
+	return context.WithValue(ctx, cliTrialCtxKey{}, true)
+}
+
+func cliTrialRequested(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(cliTrialCtxKey{}).(bool)
+	return v
 }

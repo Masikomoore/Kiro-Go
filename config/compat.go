@@ -28,6 +28,10 @@ type CompatSettings struct {
 	// that carry no cache_control, using message boundaries. Default on.
 	ImplicitAnthropicCache *bool `json:"implicitAnthropicCache,omitempty"`
 
+	// CLIEndpointFirst (experimental, default off) sends OAuth accounts to the
+	// Kiro CLI runtime first and falls back to the IDE endpoints on any error.
+	CLIEndpointFirst bool `json:"cliEndpointFirst,omitempty"`
+
 	// Experimental, default off.
 	StructuredToolHistory   bool   `json:"structuredToolHistory,omitempty"`
 	NormalizeKiroToolParams bool   `json:"normalizeKiroToolParams,omitempty"`
@@ -88,6 +92,7 @@ type CompatConfig struct {
 	SimulateAnthropicCache  bool
 	SchedulingMode          string
 	ImplicitAnthropicCache  bool
+	CLIEndpointFirst        bool
 }
 
 func boolOrDefault(v *bool, def bool) bool {
@@ -116,6 +121,7 @@ func ResolveCompatSettings(s CompatSettings) CompatConfig {
 		SimulateAnthropicCache:  boolOrDefault(s.SimulateAnthropicCache, true),
 		SchedulingMode:          SchedulingSticky,
 		ImplicitAnthropicCache:  boolOrDefault(s.ImplicitAnthropicCache, true),
+		CLIEndpointFirst:        s.CLIEndpointFirst,
 	}
 	if s.AccountThrottleCooldownMinutes > 0 {
 		out.AccountThrottleCooldown = time.Duration(s.AccountThrottleCooldownMinutes) * time.Minute
