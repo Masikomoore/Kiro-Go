@@ -25,12 +25,12 @@ func kiroConversation(turns int) *KiroPayload {
 func TestKiroProfileHitsGrowingConversation(t *testing.T) {
 	useCompat(t, config.CompatSettings{})
 	tracker := newPromptCacheTracker(time.Hour)
-	first := tracker.BuildKiroProfile(kiroConversation(3), "claude-sonnet-4.5", 0)
+	first := tracker.BuildKiroProfile(kiroConversation(3), "claude-sonnet-4.5", 0, false)
 	if first == nil || !first.Kiro {
 		t.Fatalf("expected a Kiro profile, got %+v", first)
 	}
 	tracker.Update("acct-1", first)
-	second := tracker.BuildKiroProfile(kiroConversation(4), "claude-sonnet-4.5", 0)
+	second := tracker.BuildKiroProfile(kiroConversation(4), "claude-sonnet-4.5", 0, false)
 	got := tracker.Compute("acct-1", second)
 	if got.CacheReadInputTokens < first.Breakpoints[len(first.Breakpoints)-1].CumulativeTokens {
 		t.Fatalf("the previous turn's history must be read back, got %+v", got)
@@ -43,11 +43,11 @@ func TestKiroProfileStopsAtChangedEntry(t *testing.T) {
 	useCompat(t, config.CompatSettings{})
 	tracker := newPromptCacheTracker(time.Hour)
 	first := kiroConversation(4)
-	tracker.Update("acct-1", tracker.BuildKiroProfile(first, "claude-sonnet-4.5", 0))
+	tracker.Update("acct-1", tracker.BuildKiroProfile(first, "claude-sonnet-4.5", 0, false))
 
 	second := kiroConversation(5)
 	second.ConversationState.History[2].UserInputMessage.Content = "different first kept turn"
-	profile := tracker.BuildKiroProfile(second, "claude-sonnet-4.5", 0)
+	profile := tracker.BuildKiroProfile(second, "claude-sonnet-4.5", 0, false)
 	got := tracker.Compute("acct-1", profile)
 	limit := profile.Breakpoints[2].CumulativeTokens // prelude + entries 0..1
 	if got.CacheReadInputTokens > limit {
@@ -103,5 +103,22 @@ func TestNoSessionConversationStaysOnAccountAndHits(t *testing.T) {
 	}
 	if second.Usage.CacheReadInputTokens == 0 {
 		t.Fatalf("second turn must read the first turn's history, got %+v", second.Usage)
+	}
+}
+
+// With cache_control on the newest message the current turn is a cache write,
+// so almost nothing is left as plain input.
+func TestKiroProfileIncludesCurrentForExplicitClients(t *testing.T) {
+	useCompat(t, config.CompatSettings{})
+	tracker := newPromptCacheTracker(time.Hour)
+	payload := kiroConversation(3)
+	without := tracker.BuildKiroProfile(payload, "claude-sonnet-4.5", 0, false)
+	with := tracker.BuildKiroProfile(payload, "claude-sonnet-4.5", 0, true)
+	if len(with.Breakpoints) != len(without.Breakpoints)+1 {
+		t.Fatalf("expected one extra boundary for the current message: %d vs %d", len(with.Breakpoints), len(without.Breakpoints))
+	}
+	last := with.Breakpoints[len(with.Breakpoints)-1].CumulativeTokens
+	if last <= without.Breakpoints[len(without.Breakpoints)-1].CumulativeTokens {
+		t.Fatal("the current message must add tokens to the cached prefix")
 	}
 }

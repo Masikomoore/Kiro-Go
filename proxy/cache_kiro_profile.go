@@ -21,7 +21,12 @@ const kiroImageTokenEstimate = 1600
 
 // BuildKiroProfile returns the cache profile of payload. Scope is left empty,
 // so entries are keyed by the upstream account like Kiro's own cache.
-func (t *promptCacheTracker) BuildKiroProfile(payload *KiroPayload, model string, totalInputTokens int) *promptCacheProfile {
+//
+// includeCurrent adds the current message as a final boundary. It is set when
+// the client asked for that write with cache_control (Claude Code marks its
+// newest message), so the new turn is reported as cache creation, as on the
+// Anthropic API, instead of plain input. Kiro writes it to its cache either way.
+func (t *promptCacheTracker) BuildKiroProfile(payload *KiroPayload, model string, totalInputTokens int, includeCurrent bool) *promptCacheProfile {
 	if t == nil || payload == nil {
 		return nil
 	}
@@ -37,6 +42,15 @@ func (t *promptCacheTracker) BuildKiroProfile(payload *KiroPayload, model string
 		blocks = append(blocks, cacheablePromptBlock{
 			Value:        kiroEntryFingerprintValue(entry),
 			Tokens:       kiroEntryTokens(entry),
+			TTL:          defaultPromptCacheTTL,
+			IsMessageEnd: true,
+		})
+	}
+	if includeCurrent {
+		currentEntry := KiroHistoryMessage{UserInputMessage: &current}
+		blocks = append(blocks, cacheablePromptBlock{
+			Value:        kiroEntryFingerprintValue(currentEntry),
+			Tokens:       kiroEntryTokens(currentEntry),
 			TTL:          defaultPromptCacheTTL,
 			IsMessageEnd: true,
 		})

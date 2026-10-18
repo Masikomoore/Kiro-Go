@@ -961,7 +961,7 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	if cacheProfile != nil {
 		// The client profile only decides whether to simulate; the reported
 		// split follows what Kiro actually receives (cache_kiro_profile.go).
-		cacheProfile = h.promptCache.BuildKiroProfile(kiroPayload, req.Model, estimatedInputTokens)
+		cacheProfile = h.promptCache.BuildKiroProfile(kiroPayload, req.Model, estimatedInputTokens, !cacheProfile.Implicit)
 	}
 	ctx = withConversationAffinityFallback(ctx, kiroPayload)
 
