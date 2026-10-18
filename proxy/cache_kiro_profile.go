@@ -26,7 +26,7 @@ const kiroImageTokenEstimate = 1600
 // the client asked for that write with cache_control (Claude Code marks its
 // newest message), so the new turn is reported as cache creation, as on the
 // Anthropic API, instead of plain input. Kiro writes it to its cache either way.
-func (t *promptCacheTracker) BuildKiroProfile(payload *KiroPayload, model string, totalInputTokens int, includeCurrent bool) *promptCacheProfile {
+func (t *promptCacheTracker) BuildKiroProfile(payload *KiroPayload, model string, includeCurrent bool) *promptCacheProfile {
 	if t == nil || payload == nil {
 		return nil
 	}
@@ -46,16 +46,28 @@ func (t *promptCacheTracker) BuildKiroProfile(payload *KiroPayload, model string
 			IsMessageEnd: true,
 		})
 	}
+	currentEntry := KiroHistoryMessage{UserInputMessage: &current}
+	currentTokens := kiroEntryTokens(currentEntry)
 	if includeCurrent {
-		currentEntry := KiroHistoryMessage{UserInputMessage: &current}
 		blocks = append(blocks, cacheablePromptBlock{
 			Value:        kiroEntryFingerprintValue(currentEntry),
-			Tokens:       kiroEntryTokens(currentEntry),
+			Tokens:       currentTokens,
 			TTL:          defaultPromptCacheTTL,
 			IsMessageEnd: true,
 		})
 	}
-	profile := t.profileFromBlocks(model, totalInputTokens, blocks, false)
+	// The split ratio must use the same basis as the cached prefix: what Kiro
+	// receives. The client estimate also counts content kiro-go does not send
+	// (thinking blocks, for one), which showed up as ~63k tokens of phantom
+	// plain input on every Claude Code turn.
+	kiroTotal := 0
+	for _, b := range blocks {
+		kiroTotal += b.Tokens
+	}
+	if !includeCurrent {
+		kiroTotal += currentTokens
+	}
+	profile := t.profileFromBlocks(model, kiroTotal, blocks, false)
 	if profile != nil {
 		profile.Kiro = true
 	}

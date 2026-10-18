@@ -25,12 +25,12 @@ func kiroConversation(turns int) *KiroPayload {
 func TestKiroProfileHitsGrowingConversation(t *testing.T) {
 	useCompat(t, config.CompatSettings{})
 	tracker := newPromptCacheTracker(time.Hour)
-	first := tracker.BuildKiroProfile(kiroConversation(3), "claude-sonnet-4.5", 0, false)
+	first := tracker.BuildKiroProfile(kiroConversation(3), "claude-sonnet-4.5", false)
 	if first == nil || !first.Kiro {
 		t.Fatalf("expected a Kiro profile, got %+v", first)
 	}
 	tracker.Update("acct-1", first)
-	second := tracker.BuildKiroProfile(kiroConversation(4), "claude-sonnet-4.5", 0, false)
+	second := tracker.BuildKiroProfile(kiroConversation(4), "claude-sonnet-4.5", false)
 	got := tracker.Compute("acct-1", second)
 	if got.CacheReadInputTokens < first.Breakpoints[len(first.Breakpoints)-1].CumulativeTokens {
 		t.Fatalf("the previous turn's history must be read back, got %+v", got)
@@ -43,11 +43,11 @@ func TestKiroProfileStopsAtChangedEntry(t *testing.T) {
 	useCompat(t, config.CompatSettings{})
 	tracker := newPromptCacheTracker(time.Hour)
 	first := kiroConversation(4)
-	tracker.Update("acct-1", tracker.BuildKiroProfile(first, "claude-sonnet-4.5", 0, false))
+	tracker.Update("acct-1", tracker.BuildKiroProfile(first, "claude-sonnet-4.5", false))
 
 	second := kiroConversation(5)
 	second.ConversationState.History[2].UserInputMessage.Content = "different first kept turn"
-	profile := tracker.BuildKiroProfile(second, "claude-sonnet-4.5", 0, false)
+	profile := tracker.BuildKiroProfile(second, "claude-sonnet-4.5", false)
 	got := tracker.Compute("acct-1", profile)
 	limit := profile.Breakpoints[2].CumulativeTokens // prelude + entries 0..1
 	if got.CacheReadInputTokens > limit {
@@ -112,13 +112,28 @@ func TestKiroProfileIncludesCurrentForExplicitClients(t *testing.T) {
 	useCompat(t, config.CompatSettings{})
 	tracker := newPromptCacheTracker(time.Hour)
 	payload := kiroConversation(3)
-	without := tracker.BuildKiroProfile(payload, "claude-sonnet-4.5", 0, false)
-	with := tracker.BuildKiroProfile(payload, "claude-sonnet-4.5", 0, true)
+	without := tracker.BuildKiroProfile(payload, "claude-sonnet-4.5", false)
+	with := tracker.BuildKiroProfile(payload, "claude-sonnet-4.5", true)
 	if len(with.Breakpoints) != len(without.Breakpoints)+1 {
 		t.Fatalf("expected one extra boundary for the current message: %d vs %d", len(with.Breakpoints), len(without.Breakpoints))
 	}
 	last := with.Breakpoints[len(with.Breakpoints)-1].CumulativeTokens
 	if last <= without.Breakpoints[len(without.Breakpoints)-1].CumulativeTokens {
 		t.Fatal("the current message must add tokens to the cached prefix")
+	}
+}
+
+// The split is computed against the Kiro payload, so a cache_control client
+// with an unchanged history reports almost no plain input, whatever the client
+// estimate counted.
+func TestKiroProfileSplitUsesKiroBasis(t *testing.T) {
+	useCompat(t, config.CompatSettings{})
+	tracker := newPromptCacheTracker(time.Hour)
+	p := tracker.BuildKiroProfile(kiroConversation(3), "claude-sonnet-4.5", true)
+	tracker.Update("acct-1", p)
+	usage := tracker.Compute("acct-1", tracker.BuildKiroProfile(kiroConversation(3), "claude-sonnet-4.5", true))
+	split := usage.split(200000)
+	if split.Input > 200000/100 {
+		t.Fatalf("an unchanged cache_control turn must be nearly all cache, got %+v", split)
 	}
 }
