@@ -357,7 +357,7 @@ func TestClaudeStreamRetryDoesNotLeakPreviousAttemptText(t *testing.T) {
 	if strings.Contains(body, "LEAK") {
 		t.Fatalf("discarded attempt leaked into the retry output: %s", body)
 	}
-	if !strings.Contains(body, "clean answer") {
-		t.Fatalf("expected recovered answer, got %s", body)
+	if answer := claudeStreamAnswerText(t, body); answer != "clean answer" {
+		t.Fatalf("expected recovered answer, got %q from %s", answer, body)
 	}
 }

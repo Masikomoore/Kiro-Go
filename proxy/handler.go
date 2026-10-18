@@ -1218,19 +1218,12 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 						inThinkingBlock = true
 						dropTagThinking = !allowTagSource(&thinkingSource)
 						thinkingStarted = false
-					} else if forceFlush || len([]rune(textBuffer)) > 50 {
-						runes := []rune(textBuffer)
-						safeLen := len(runes)
-						if !forceFlush {
-							safeLen = max(0, len(runes)-15)
-						}
-						if safeLen > 0 {
-							tagScan.emitted(string(runes[:safeLen]))
-							sendText(string(runes[:safeLen]), 0)
-							textBuffer = string(runes[safeLen:])
-						}
-						break
 					} else {
+						if safeLen := answerFlushLen(textBuffer, forceFlush); safeLen > 0 {
+							tagScan.emitted(textBuffer[:safeLen])
+							sendText(textBuffer[:safeLen], 0)
+							textBuffer = textBuffer[safeLen:]
+						}
 						break
 					}
 				} else {
@@ -2029,19 +2022,12 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 						inThinkingBlock = true
 						dropTagThinking = !allowTagSource(&thinkingSource)
 						thinkingStarted = false
-					} else if forceFlush || len([]rune(textBuffer)) > 50 {
-						runes := []rune(textBuffer)
-						safeLen := len(runes)
-						if !forceFlush {
-							safeLen = max(0, len(runes)-15)
-						}
-						if safeLen > 0 {
-							tagScan.emitted(string(runes[:safeLen]))
-							sendChunk(string(runes[:safeLen]), 0)
-							textBuffer = string(runes[safeLen:])
-						}
-						break
 					} else {
+						if safeLen := answerFlushLen(textBuffer, forceFlush); safeLen > 0 {
+							tagScan.emitted(textBuffer[:safeLen])
+							sendChunk(textBuffer[:safeLen], 0)
+							textBuffer = textBuffer[safeLen:]
+						}
 						break
 					}
 				} else {

@@ -6,7 +6,10 @@
 // Portions adapted from hank9999/kiro.rs (MIT), src/anthropic/stream.rs.
 package proxy
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 const (
 	thinkingOpenTag  = "<thinking>"
@@ -97,4 +100,23 @@ func (s *thinkingTagScanner) emitted(text string) {
 	if strings.Count(text, markdownFence)%2 == 1 {
 		s.inFence = !s.inFence
 	}
+}
+
+// answerFlushLen returns how many leading bytes of buf can go out as answer
+// text while no start tag has been found. Only the last len(thinkingOpenTag)
+// bytes are held: they may be the front of a split tag, and they keep the
+// character before a tag available for the quote check. kiro-RS-Tool holds
+// back the same amount; the old 50-rune minimum delayed every short chunk.
+func answerFlushLen(buf string, final bool) int {
+	if final {
+		return len(buf)
+	}
+	n := len(buf) - len(thinkingOpenTag)
+	if n <= 0 {
+		return 0
+	}
+	for n > 0 && !utf8.RuneStart(buf[n]) {
+		n--
+	}
+	return n
 }
