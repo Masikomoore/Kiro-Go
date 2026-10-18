@@ -424,13 +424,12 @@ func callKiroAPIContextOnce(ctx context.Context, account *config.Account, payloa
 	}
 	setPayloadProfileArnForAccount(payload, account)
 
-	if _, err := json.Marshal(payload); err != nil {
-		return err
-	}
-
-	// Debug: dump full payload for troubleshooting upstream rejections
-	if payloadJSON, err := json.Marshal(payload); err == nil {
-		logger.Debugf("[KiroAPI] Request payload: %s", string(payloadJSON))
+	// Debug: dump full payload for troubleshooting upstream rejections.
+	// The payload can be megabytes, so it is only encoded when DEBUG is on.
+	if logger.DebugEnabled() {
+		if payloadJSON, err := json.Marshal(payload); err == nil {
+			logger.Debugf("[KiroAPI] Request payload: %s", payloadJSON)
+		}
 	}
 
 	// Wrap OnToolUse to restore original tool names (and, when enabled,
@@ -482,8 +481,11 @@ endpointLoop:
 
 		baseFields := payload.AdditionalModelRequestFields
 		payload.AdditionalModelRequestFields = additionalFieldsForEndpoint(baseFields, isAPIKey)
-		reqBody, _ := json.Marshal(payload)
+		reqBody, err := json.Marshal(payload)
 		payload.AdditionalModelRequestFields = baseFields
+		if err != nil {
+			return err
+		}
 		host := ""
 		if parsedURL, parseErr := url.Parse(epURL); parseErr == nil {
 			host = parsedURL.Host

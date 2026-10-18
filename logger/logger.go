@@ -106,6 +106,12 @@ func enabled(l Level) bool {
 	return Level(currentLevel.Load()) <= l
 }
 
+// DebugEnabled reports whether DEBUG messages are written. Use it to skip
+// building expensive log arguments.
+func DebugEnabled() bool {
+	return enabled(LevelDebug)
+}
+
 // Debugf logs a formatted message at DEBUG level.
 func Debugf(format string, v ...interface{}) {
 	if enabled(LevelDebug) {
