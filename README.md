@@ -136,11 +136,18 @@ The `compat` section of `config.json` (also `GET`/`POST /admin/api/settings` wit
 | `builderIdPlaceholderArn` | `off` | `on_demand` or `always`: placeholder profileArn for Builder ID/social accounts |
 | `promptCacheMode` | `full` | Anthropic only. `read_only` reports cache reads but no cache creation; `off` reports no cache fields |
 | `simulateAnthropicCache` | `true` | Anthropic `/v1/messages` simulated cache. Off omits cache usage fields. Applies on the next request |
-| `implicitAnthropicCache` | `true` | Also simulate `/v1/messages` requests that carry no `cache_control` (for example WorkBuddy through Sub2API's Chat Completions → Anthropic conversion). Breakpoints follow kiro-RS-Tool's automatic prefix chain: end of tools+system, then the end of every message except the last, 5-minute TTL |
-| `promptCacheScope` | `auto` | `auto`: Claude Code session, then API key, then account; `account`: per upstream account |
+| `implicitAnthropicCache` | `true` | Also simulate `/v1/messages` requests that carry no `cache_control` (for example WorkBuddy through Sub2API's Chat Completions → Anthropic conversion) |
+| `cliEndpointFirst` | `false` | Experimental: OAuth accounts try the Kiro CLI runtime first and fall back to the IDE endpoints on any error. A single request can ask for the same with the header `X-Kiro-Go-Endpoint: cli` |
+| `promptCacheScope` | `auto` | Web-search paths only: `auto` scopes by Claude Code session, then API key, then account; `account` by upstream account. `/v1/messages` always scopes by upstream account, like Kiro's own cache |
 | `promptCacheMaxEntries` | `20000` | LRU cap of the simulated prompt cache |
 
-Kiro caches prompts upstream (repeated turns cost fewer credits) but returns no cache token counts, so prompt-cache usage on `/v1/messages` is simulated. Requests with `cache_control` use its breakpoints; requests without it use message boundaries when `implicitAnthropicCache` is on. OpenAI `/v1/chat/completions` and `/v1/responses` report no cache fields. The switches do not change Kiro credits. Input, cache creation, and cache read always add up to the real input total. The simulated cache is saved to `prompt_cache.json` next to `config.json`. The admin panel under Settings saves these switches without a restart.
+Kiro caches prompt prefixes per account (a repeated prefix costs roughly a third of the credits) but returns no cache token counts on either the IDE endpoint or the CLI runtime, so prompt-cache usage on `/v1/messages` is simulated. The simulation hashes the history actually sent to Kiro, after conversion and truncation, with a boundary after every history entry; the current message is never counted as cached. It is keyed by upstream account, so a turn that changes accounts, or whose early history kiro-go changed, reports creation as Kiro bills it. Requests without `cache_control` are simulated only when `implicitAnthropicCache` is on.
+
+Requests over the ~900 KiB upstream limit drop their oldest turns. The cut point is remembered per conversation and reused while the payload fits; when it no longer fits, the new cut leaves 20% headroom. This keeps the history prefix byte-stable across turns so Kiro's cache keeps hitting.
+
+A conversation keeps its upstream account (`schedulingMode: sticky`) by Claude Code session, else API key, else the Kiro conversation ID derived from the system prompt and first user message.
+
+OpenAI `/v1/chat/completions` and `/v1/responses` report no cache fields. The switches do not change Kiro credits. Input, cache creation, and cache read always add up to the real input total. The simulated cache is saved to `prompt_cache.json` next to `config.json`. The admin panel under Settings saves these switches without a restart.
 
 ## Outbound Proxy
 

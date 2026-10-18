@@ -114,7 +114,7 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	respID := generateResponseID()
-	ctx := withAccountAffinityKey(r.Context(), accountAffinityKey(nil, r, apiKeyID))
+	ctx := withConversationAffinityFallback(withAccountAffinityKey(r.Context(), accountAffinityKey(nil, r, apiKeyID)), kiroPayload)
 
 	if req.Stream {
 		h.handleResponsesStream(ctx, w, kiroPayload, actualModel, thinking, estimatedInputTokens,

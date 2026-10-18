@@ -1925,18 +1925,7 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 	payload.ConversationState.History = priming
 	baseSize := payloadByteSize(payload) + historyEntryByteSize(placeholderEntry)
 
-	// Keep the largest suffix of the conversation that fits, but never fewer than
-	// minRecentHistoryTurns entries (so recent context is preserved).
-	keepFrom := len(conversation)
-	running := baseSize
-	for i := len(conversation) - 1; i >= 0; i-- {
-		running += entrySizes[i]
-		kept := len(conversation) - i
-		if running > maxPayloadBytes && kept > minRecentHistoryTurns {
-			break
-		}
-		keepFrom = i
-	}
+	keepFrom := stableTruncationStart(payload.ConversationState.ConversationID, conversation, entrySizes, baseSize)
 
 	tail := conversation[keepFrom:]
 	tail = dropLeadingAssistant(tail)

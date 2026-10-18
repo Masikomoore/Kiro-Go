@@ -38,27 +38,62 @@ func bigConversation(turns int) *ClaudeRequest {
 	return &ClaudeRequest{Model: "claude-opus-5.5", System: "You are a coding assistant.", Messages: msgs}
 }
 
-// Dropping the oldest turns to fit maxPayloadBytes changes the Kiro history
-// right after the system priming on every turn, so upstream cannot reuse its
-// cached prefix even though the client history only grew.
-func TestTruncationBreaksKiroHistoryPrefix(t *testing.T) {
+func resetTruncationBoundaries(t *testing.T) {
+	t.Helper()
+	truncationBoundariesMu.Lock()
+	truncationBoundaries = make(map[string]truncationBoundary)
+	truncationBoundariesMu.Unlock()
+	t.Cleanup(func() {
+		truncationBoundariesMu.Lock()
+		truncationBoundaries = make(map[string]truncationBoundary)
+		truncationBoundariesMu.Unlock()
+	})
+}
+
+// Dropping the oldest turns used to move the cut on every turn, changing the
+// Kiro history right after the system priming so upstream could not reuse its
+// cached prefix. The boundary now stays put while the payload fits.
+func TestTruncationKeepsKiroHistoryPrefixStable(t *testing.T) {
+	resetTruncationBoundaries(t)
 	first := ClaudeToKiro(bigConversation(30), false)
 	second := ClaudeToKiro(bigConversation(31), false)
 	if first.Shrink.Stage != "drop" || second.Shrink.Stage != "drop" {
 		t.Fatalf("expected both payloads to drop turns, got %+v and %+v", first.Shrink, second.Shrink)
 	}
-	c1, c1n := clientMessageHashes(bigConversation(30).Messages)
-	c2, c2n := clientMessageHashes(bigConversation(31).Messages)
-	if got := prefixDivergence(c1, c2, c1n, c2n, false); got != "ok" {
-		t.Fatalf("client history only grew, got %q", got)
+	if first.ConversationState.ConversationID != second.ConversationState.ConversationID {
+		t.Fatal("both turns must share a conversation ID")
 	}
 	k1, k1n := kiroHistoryHashes(first.ConversationState.History)
 	k2, k2n := kiroHistoryHashes(second.ConversationState.History)
-	got := prefixDivergence(k1, k2, k1n, k2n, false)
-	if got == "ok" {
-		t.Fatalf("expected the Kiro history prefix to change after truncation")
+	if got := prefixDivergence(k1, k2, k1n, k2n, false); got != "ok" {
+		t.Fatalf("the Kiro history prefix must stay stable, got %q (dropped %d then %d)", got, first.Shrink.DroppedTurns, second.Shrink.DroppedTurns)
 	}
-	t.Logf("client=ok kiro=%s dropped %d then %d turns", got, first.Shrink.DroppedTurns, second.Shrink.DroppedTurns)
+	if size := payloadByteSize(first); size > int(float64(maxPayloadBytes)*truncationTargetFraction)+64*1024 {
+		t.Fatalf("a new boundary should leave headroom, payload is %d bytes", size)
+	}
+}
+
+// Once the kept suffix no longer fits, the boundary moves once and then holds.
+func TestTruncationBoundaryMovesOnlyWhenFull(t *testing.T) {
+	resetTruncationBoundaries(t)
+	moves := 0
+	var prev []uint64
+	var prevNoID []uint64
+	for turns := 30; turns <= 60; turns++ {
+		p := ClaudeToKiro(bigConversation(turns), false)
+		cur, curNoID := kiroHistoryHashes(p.ConversationState.History)
+		if prev != nil && prefixDivergence(prev, cur, prevNoID, curNoID, false) != "ok" {
+			moves++
+		}
+		if size := payloadByteSize(p); size > maxPayloadBytes {
+			t.Fatalf("turn %d payload %d bytes exceeds the limit", turns, size)
+		}
+		prev, prevNoID = cur, curNoID
+	}
+	t.Logf("boundary moved %d times over 31 turns", moves)
+	if moves == 0 || moves > 6 {
+		t.Fatalf("expected a few boundary moves over 30 growing turns, got %d", moves)
+	}
 }
 
 // Claude Code moves its cache_control marker to the newest message every

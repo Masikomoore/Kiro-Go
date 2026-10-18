@@ -958,6 +958,12 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	// 转换请求
 	kiroPayload := ClaudeToKiro(&req, thinking)
 	h.cacheDiag.observe(&req, kiroPayload)
+	if cacheProfile != nil {
+		// The client profile only decides whether to simulate; the reported
+		// split follows what Kiro actually receives (cache_kiro_profile.go).
+		cacheProfile = h.promptCache.BuildKiroProfile(kiroPayload, req.Model, estimatedInputTokens)
+	}
+	ctx = withConversationAffinityFallback(ctx, kiroPayload)
 
 	// Stream or non-stream
 	if req.Stream {
@@ -1820,7 +1826,7 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	kiroPayload := OpenAIToKiro(&req, thinking)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
-	ctx := withAccountAffinityKey(r.Context(), accountAffinityKey(nil, r, apiKeyID))
+	ctx := withConversationAffinityFallback(withAccountAffinityKey(r.Context(), accountAffinityKey(nil, r, apiKeyID)), kiroPayload)
 	if req.Stream {
 		h.handleOpenAIStream(ctx, w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID)
 	} else {

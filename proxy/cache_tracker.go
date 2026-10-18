@@ -116,6 +116,8 @@ type promptCacheProfile struct {
 	// Implicit marks a profile built from message boundaries because the
 	// request carried no cache_control.
 	Implicit bool
+	// Kiro marks a profile hashed from the Kiro payload (BuildKiroProfile).
+	Kiro bool
 }
 
 func minCacheableTokensForModel(model string) int {
@@ -856,6 +858,9 @@ func logPromptCacheUsage(conv, model string, profile *promptCacheProfile, usage 
 		kind, scope, breakpoints = "explicit", "acct", len(profile.Breakpoints)
 		if profile.Implicit {
 			kind = "implicit"
+		}
+		if profile.Kiro {
+			kind = "kiro"
 		}
 		if i := strings.IndexByte(profile.Scope, ':'); i > 0 {
 			scope = profile.Scope[:i]

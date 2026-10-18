@@ -92,6 +92,17 @@ func accountAffinityKey(req *ClaudeRequest, r *http.Request, apiKeyID string) st
 	return ""
 }
 
+// withConversationAffinityFallback keys affinity by the Kiro conversation ID
+// when the request carried neither a session nor an API key (WorkBuddy via
+// Sub2API on a gateway without API keys). The ID is derived from the system
+// prompt and first user message, so it is stable across a conversation's turns.
+func withConversationAffinityFallback(ctx context.Context, payload *KiroPayload) context.Context {
+	if accountAffinityKeyFrom(ctx) != "" || payload == nil || payload.ConversationState.ConversationID == "" {
+		return ctx
+	}
+	return withAccountAffinityKey(ctx, "conv:"+payload.ConversationState.ConversationID)
+}
+
 type accountAffinityCtxKey struct{}
 
 func withAccountAffinityKey(ctx context.Context, key string) context.Context {

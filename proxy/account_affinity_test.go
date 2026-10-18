@@ -103,3 +103,15 @@ func TestAccountAffinityExpires(t *testing.T) {
 		t.Fatalf("expected expired entry, got %q", got)
 	}
 }
+
+func TestConversationAffinityFallback(t *testing.T) {
+	payload := &KiroPayload{}
+	payload.ConversationState.ConversationID = "conv-123"
+	if got := accountAffinityKeyFrom(withConversationAffinityFallback(context.Background(), payload)); got != "conv:conv-123" {
+		t.Fatalf("no session or key must fall back to the conversation, got %q", got)
+	}
+	ctx := withAccountAffinityKey(context.Background(), "sess:abc")
+	if got := accountAffinityKeyFrom(withConversationAffinityFallback(ctx, payload)); got != "sess:abc" {
+		t.Fatalf("a session key must win over the conversation, got %q", got)
+	}
+}

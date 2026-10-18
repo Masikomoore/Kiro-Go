@@ -232,7 +232,10 @@ func TestPromptCacheEvictsLeastRecentlyUsed(t *testing.T) {
 	}
 }
 
-func TestClaudeSessionCacheHitsAfterAccountRotation(t *testing.T) {
+// Kiro's prompt cache lives per upstream account, so the simulation must not
+// report a hit when a turn lands on another account (it did before, and Kiro
+// billed those turns at full price).
+func TestClaudeCacheIsPerUpstreamAccount(t *testing.T) {
 	srv := &failoverTestServer{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		srv.record(r)
@@ -263,14 +266,18 @@ func TestClaudeSessionCacheHitsAfterAccountRotation(t *testing.T) {
 
 	first := send()
 	second := send() // round robin moves this to the other account
-	if calls := srv.calls(); len(calls) != 2 || calls[0] == calls[1] {
-		t.Fatalf("expected the two requests on different accounts, got %v", calls)
+	third := send()  // and back to the first one
+	if calls := srv.calls(); len(calls) != 3 || calls[0] == calls[1] || calls[0] != calls[2] {
+		t.Fatalf("expected accounts A, B, A, got %v", calls)
 	}
 	if first.Usage.CacheCreationInputTokens == 0 || first.Usage.CacheReadInputTokens != 0 {
 		t.Fatalf("first request must create, got %+v", first.Usage)
 	}
-	if second.Usage.CacheReadInputTokens == 0 || second.Usage.CacheCreationInputTokens != 0 {
-		t.Fatalf("same session must hit after rotating accounts, got %+v", second.Usage)
+	if second.Usage.CacheReadInputTokens != 0 || second.Usage.CacheCreationInputTokens == 0 {
+		t.Fatalf("another account has no cache yet, got %+v", second.Usage)
+	}
+	if third.Usage.CacheReadInputTokens == 0 {
+		t.Fatalf("back on the first account the prefix must hit, got %+v", third.Usage)
 	}
 }
 
