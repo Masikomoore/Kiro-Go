@@ -109,12 +109,18 @@ func accountAffinityKeyFrom(ctx context.Context) string {
 	return key
 }
 
-// nextAccount picks the upstream account for one attempt. With affinity on and
-// a conversation key in ctx, the conversation's previous account is reused
-// while it is ready; otherwise the pool rotates as before.
+// nextAccount picks the upstream account for one attempt under
+// compat.schedulingMode. In sticky mode with a conversation key in ctx, the
+// conversation's previous account is reused while it is ready.
 func (h *Handler) nextAccount(ctx context.Context, model string, excluded map[string]bool) *config.Account {
+	switch config.GetCompatConfig().SchedulingMode {
+	case config.SchedulingPriority:
+		return h.pool.GetFirstForModelExcluding(model, excluded)
+	case config.SchedulingRoundRobin:
+		return h.pool.GetNextForModelExcluding(model, excluded)
+	}
 	key := accountAffinityKeyFrom(ctx)
-	if key == "" || h.affinity == nil || !config.GetCompatConfig().AccountAffinity {
+	if key == "" || h.affinity == nil {
 		return h.pool.GetNextForModelExcluding(model, excluded)
 	}
 	now := time.Now()

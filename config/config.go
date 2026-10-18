@@ -87,6 +87,11 @@ type Account struct {
 	// Priority weight for load balancing (higher = more requests)
 	Weight int `json:"weight,omitempty"` // 0 or 1 = normal, 2+ = higher priority
 
+	// Priority tier for account scheduling. Smaller is preferred; 0 is the
+	// default and the highest. A lower tier serves only when no account in a
+	// higher tier is ready.
+	Priority int `json:"priority,omitempty"`
+
 	// Upstream Overages state (mirrored from AWS Q `setUserPreference` / `getUsageLimits`).
 	// OverageStatus is the only switch that decides whether to keep dispatching once UsageLimit is reached.
 	// Allowed values: "ENABLED", "DISABLED", "UNKNOWN" (or empty when not yet fetched).

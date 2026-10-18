@@ -11,6 +11,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -365,7 +366,7 @@ func (h *Handler) performWebSearch(model, query string) (*WebSearchResults, stri
 	excluded := make(map[string]bool)
 	var lastErr error
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded)
+		account := h.nextAccount(context.Background(), model, excluded)
 		if account == nil {
 			break
 		}

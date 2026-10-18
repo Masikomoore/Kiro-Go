@@ -349,3 +349,36 @@ func TestGetPreferredForModelExcludingFallsBack(t *testing.T) {
 		t.Fatal("unknown preference must fall back to rotation")
 	}
 }
+
+func TestPickUsesBestPriorityTier(t *testing.T) {
+	p := newTestPool(
+		config.Account{ID: "low", Priority: 2},
+		config.Account{ID: "top-a"},
+		config.Account{ID: "top-b"},
+	)
+	seen := map[string]bool{}
+	for i := 0; i < 6; i++ {
+		seen[p.GetNextForModelExcluding("m", nil).ID] = true
+	}
+	if seen["low"] || !seen["top-a"] || !seen["top-b"] {
+		t.Fatalf("rotation should stay in tier 0, saw %v", seen)
+	}
+	// The lower tier serves only once the top tier is unavailable.
+	p.cooldowns["top-a"] = time.Now().Add(time.Minute)
+	p.cooldowns["top-b"] = time.Now().Add(time.Minute)
+	if got := p.GetNextForModelExcluding("m", nil); got == nil || got.ID != "low" {
+		t.Fatalf("expected lower tier, got %v", got)
+	}
+}
+
+func TestGetFirstForModelExcludingKeepsConfigOrder(t *testing.T) {
+	p := newTestPool(config.Account{ID: "a", Priority: 1}, config.Account{ID: "b", Priority: 1}, config.Account{ID: "c", Priority: 3})
+	for i := 0; i < 4; i++ {
+		if got := p.GetFirstForModelExcluding("m", nil); got == nil || got.ID != "a" {
+			t.Fatalf("expected a, got %v", got)
+		}
+	}
+	if got := p.GetFirstForModelExcluding("m", map[string]bool{"a": true}); got == nil || got.ID != "b" {
+		t.Fatalf("expected b after excluding a, got %v", got)
+	}
+}

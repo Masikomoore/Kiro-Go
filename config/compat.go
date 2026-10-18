@@ -20,9 +20,9 @@ type CompatSettings struct {
 	ThinkingSignature     *bool `json:"thinkingSignature,omitempty"`
 	ToolUseXMLFilter      *bool `json:"toolUseXmlFilter,omitempty"`
 	ImageDedup            *bool `json:"imageDedup,omitempty"`
-	// AccountAffinity keeps each conversation (Claude Code session, else API
-	// key) on the account that served it, so the upstream prompt cache hits.
-	AccountAffinity *bool `json:"accountAffinity,omitempty"`
+	// SchedulingMode picks the upstream account per request: sticky (default)
+	// | round_robin | priority. See the Scheduling* constants.
+	SchedulingMode string `json:"schedulingMode,omitempty"`
 
 	// Experimental, default off.
 	StructuredToolHistory   bool   `json:"structuredToolHistory,omitempty"`
@@ -54,6 +54,15 @@ const (
 	PromptCacheScopeAuto    = "auto"
 	PromptCacheScopeAccount = "account"
 
+	// SchedulingSticky keeps a conversation (Claude Code session, else API
+	// key) on the account that served it; new conversations rotate.
+	SchedulingSticky = "sticky"
+	// SchedulingRoundRobin moves every request to the next account.
+	SchedulingRoundRobin = "round_robin"
+	// SchedulingPriority always uses the first ready account of the best
+	// priority tier, like kiro-RS-Tool's default mode.
+	SchedulingPriority = "priority"
+
 	defaultAccountThrottleCooldown = 10 * time.Minute
 	defaultPromptCacheMaxEntries   = 20000
 )
@@ -75,7 +84,7 @@ type CompatConfig struct {
 	PromptCacheMaxEntries   int
 	SimulateAnthropicCache  bool
 	SimulateOpenAICache     bool
-	AccountAffinity         bool
+	SchedulingMode          string
 }
 
 func boolOrDefault(v *bool, def bool) bool {
@@ -103,7 +112,7 @@ func ResolveCompatSettings(s CompatSettings) CompatConfig {
 		PromptCacheMaxEntries:   defaultPromptCacheMaxEntries,
 		SimulateAnthropicCache:  boolOrDefault(s.SimulateAnthropicCache, true),
 		SimulateOpenAICache:     boolOrDefault(s.SimulateOpenAICache, false),
-		AccountAffinity:         boolOrDefault(s.AccountAffinity, true),
+		SchedulingMode:          SchedulingSticky,
 	}
 	if s.AccountThrottleCooldownMinutes > 0 {
 		out.AccountThrottleCooldown = time.Duration(s.AccountThrottleCooldownMinutes) * time.Minute
@@ -118,6 +127,10 @@ func ResolveCompatSettings(s CompatSettings) CompatConfig {
 	}
 	if strings.EqualFold(strings.TrimSpace(s.PromptCacheScope), PromptCacheScopeAccount) {
 		out.PromptCacheScope = PromptCacheScopeAccount
+	}
+	switch v := strings.ToLower(strings.TrimSpace(s.SchedulingMode)); v {
+	case SchedulingRoundRobin, SchedulingPriority:
+		out.SchedulingMode = v
 	}
 	if s.PromptCacheMaxEntries > 0 {
 		out.PromptCacheMaxEntries = s.PromptCacheMaxEntries

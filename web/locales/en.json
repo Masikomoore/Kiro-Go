@@ -1,7 +1,6 @@
 {
   "login.title": "Sign in",
   "login.subtitle": "Enter admin password to continue",
-
   "login.password": "Admin Password",
   "login.passwordPlaceholder": "Enter password",
   "login.submit": "Login",
@@ -202,7 +201,7 @@
   "detail.saveFailed": "Save failed",
   "detail.generateFailed": "Generate failed",
   "detail.weight": "Request Weight",
-  "detail.weightHint": "0-1 = normal, 2+ = higher priority",
+  "detail.weightHint": "Shares requests within one priority tier; a larger weight gets more. 0-1 = normal",
   "detail.overage": "Overages (Upstream)",
   "detail.overageHint": "Toggling calls AWS Q setUserPreference and flips Overages in your Kiro account immediately",
   "detail.overageStatus": "Current status",
@@ -521,5 +520,16 @@
   "errors.typeSuspended": "Suspended",
   "errors.typeOverage": "Overage",
   "errors.typeProfile": "Profile",
-  "errors.typeUnknown": "Unknown"
+  "errors.typeUnknown": "Unknown",
+  "settings.scheduling": "Account scheduling",
+  "settings.schedulingMode": "Scheduling mode",
+  "settings.schedulingSticky": "Session sticky (recommended)",
+  "settings.schedulingRoundRobin": "Round robin",
+  "settings.schedulingPriority": "Fixed priority",
+  "settings.schedulingHint": "Session sticky: one conversation (Claude Code session ID, else API key) stays on one account so the upstream cache hits and the first token arrives sooner; it moves only when that account cools down or fails, and new conversations rotate. Round robin: every request goes to the next account. Fixed priority: every request uses the first ready account of the highest priority and moves only on failure (kiro-RS default). All modes use the tier with the smallest priority number first. Applies on the next request.",
+  "settings.saveScheduling": "Save scheduling",
+  "settings.schedulingSaved": "Scheduling saved",
+  "detail.priority": "Scheduling priority",
+  "detail.priorityHint": "Smaller is preferred; 0 (default) is the highest. A lower tier serves only when no account in a higher tier is available",
+  "accounts.priorityShort": "Pri"
 }

@@ -193,7 +193,23 @@ func (p *AccountPool) GetNextForModel(model string) *config.Account {
 }
 
 // GetNextForModelExcluding 获取下一个支持指定模型的可用账号，并跳过指定账号。
+// Rotation stays inside the best priority tier (see pick).
 func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string]bool) *config.Account {
+	return p.pick(model, excluded, false)
+}
+
+// GetFirstForModelExcluding returns the first ready account, in config order,
+// of the best priority tier. Traffic stays on that account until it cools
+// down or fails, like kiro-RS-Tool's default "priority" mode.
+func (p *AccountPool) GetFirstForModelExcluding(model string, excluded map[string]bool) *config.Account {
+	return p.pick(model, excluded, true)
+}
+
+// pick chooses among ready accounts with the smallest Priority value (0 is the
+// default and the highest). A lower tier is used only when no account in a
+// higher one is ready. inOrder takes the first account of the tier instead of
+// rotating through it.
+func (p *AccountPool) pick(model string, excluded map[string]bool, inOrder bool) *config.Account {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -204,20 +220,31 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 	allowOverUsage := config.GetAllowOverUsage()
 	now := time.Now()
 	n := len(p.accounts)
-	seen := make(map[string]bool)
 
-	for i := 0; i < n; i++ {
-		idx := atomic.AddUint64(&p.currentIndex, 1) % uint64(n)
-		acc := &p.accounts[idx]
-
-		if seen[acc.ID] {
-			continue
+	bestTier, found := 0, false
+	for i := range p.accounts {
+		acc := &p.accounts[i]
+		if (!found || acc.Priority < bestTier) && p.readyLocked(acc, model, excluded, now, allowOverUsage) {
+			bestTier, found = acc.Priority, true
 		}
-		if !p.readyLocked(acc, model, excluded, now, allowOverUsage) {
-			seen[acc.ID] = true
-			continue
+	}
+	if found {
+		inTier := func(acc *config.Account) bool {
+			return acc.Priority == bestTier && p.readyLocked(acc, model, excluded, now, allowOverUsage)
 		}
-		return acc
+		if inOrder {
+			for i := range p.accounts {
+				if acc := &p.accounts[i]; inTier(acc) {
+					return acc
+				}
+			}
+		}
+		for i := 0; i < n; i++ {
+			idx := atomic.AddUint64(&p.currentIndex, 1) % uint64(n)
+			if acc := &p.accounts[idx]; inTier(acc) {
+				return acc
+			}
+		}
 	}
 
 	// fallback：找冷却时间最短且支持该模型的账号

@@ -956,6 +956,8 @@
       const isSelected = selectedAccounts.has(a.id);
       const weight = a.weight || 0;
       const weightBadge = weight >= 2 ? '<span class="badge badge-warning">' + escapeHtml(t('accounts.weightShort')) + ':' + weight + '</span>' : '';
+      const priority = a.priority || 0;
+      const priorityBadge = priority > 0 ? '<span class="badge badge-muted">' + escapeHtml(t('accounts.priorityShort')) + ':' + priority + '</span>' : '';
       const overageBadge = renderOverageBadge(a);
       const banned = a.banStatus && a.banStatus !== 'ACTIVE';
       const idAttr = escapeAttr(a.id);
@@ -977,6 +979,7 @@
         getSubBadge(a.subscriptionType) +
         getTrialBadge(a) +
         weightBadge +
+        priorityBadge +
         overageBadge +
         '<span class="badge badge-info">' + escapeHtml(formatAuthMethod(a.provider || a.authMethod)) + '</span>' +
         getStatusBadge(a) +
@@ -1252,6 +1255,14 @@
       '<button class="btn btn-sm btn-primary" data-detail-action="saveWeight" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.save')) + '</button>' +
       '</div>' +
 
+      '<div class="detail-section"><h4>' + escapeHtml(t('detail.priority')) + '</h4>' +
+      '<div class="form-group">' +
+      '<input type="number" id="priorityInput" value="' + (a.priority || 0) + '" min="0" max="99" />' +
+      '<small>' + escapeHtml(t('detail.priorityHint')) + '</small>' +
+      '</div>' +
+      '<button class="btn btn-sm btn-primary" data-detail-action="savePriority" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.save')) + '</button>' +
+      '</div>' +
+
       '<div class="detail-section">' +
       '<h4>' + escapeHtml(t('detail.overage')) +
       ' <button class="btn btn-sm btn-outline" data-detail-action="refreshOverage" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.overageRefresh')) + '</button>' +
@@ -1356,6 +1367,10 @@
   async function saveWeight(id) {
     const weight = parseInt($('weightInput').value, 10) || 0;
     await putAccount(id, { weight }, t('detail.saved'));
+  }
+  async function savePriority(id) {
+    const priority = Math.max(0, parseInt($('priorityInput').value, 10) || 0);
+    await putAccount(id, { priority }, t('detail.saved'));
   }
   function renderOverageBadge(a) {
     const status = (a.overageStatus || '').toUpperCase();
@@ -1587,6 +1602,7 @@
     const cacheEff = d.compatEffective || {};
     $('simulateAnthropicCache').checked = cacheEff.simulateAnthropicCache !== false;
     $('simulateOpenAICache').checked = cacheEff.simulateOpenAICache === true;
+    $('schedulingMode').value = cacheEff.schedulingMode || 'sticky';
     await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
   }
@@ -1694,6 +1710,19 @@
     const allowOverUsage = $('allowOverUsage').checked;
     await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage }) });
     toast(t('settings.overUsageSaved'), 'success');
+  }
+  async function saveScheduling() {
+    const compat = Object.assign({}, storedCompat);
+    compat.schedulingMode = $('schedulingMode').value;
+    try {
+      const res = await api('/settings', { method: 'POST', body: JSON.stringify({ compat }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.success === false) throw new Error(d.error || t('common.saveFailed'));
+      storedCompat = compat;
+      toast(t('settings.schedulingSaved'), 'success');
+    } catch (e) {
+      toast((e && e.message) || t('common.saveFailed'), 'error');
+    }
   }
   async function saveCacheSim() {
     const compat = Object.assign({}, storedCompat);
@@ -3250,6 +3279,7 @@
     $('saveRequireApiKeyBtn').addEventListener('click', saveRequireApiKey);
     $('saveOverUsageBtn').addEventListener('click', saveOverUsageConfig);
     $('saveCacheSimBtn').addEventListener('click', saveCacheSim);
+    $('saveSchedulingBtn').addEventListener('click', saveScheduling);
     $('saveThinkingBtn').addEventListener('click', saveThinkingConfig);
     $('saveEndpointBtn').addEventListener('click', saveEndpointConfig);
     $('changePasswordBtn').addEventListener('click', changePassword);
@@ -3320,6 +3350,7 @@
       const a = b.dataset.detailAction;
       if (a === 'saveMachineId') saveMachineId(id);
       else if (a === 'saveWeight') saveWeight(id);
+      else if (a === 'savePriority') savePriority(id);
       else if (a === 'toggleOverage') toggleOverageSwitch(id, b);
       else if (a === 'refreshOverage') refreshAccountOverage(id);
       else if (a === 'saveProxyURL') saveProxyURL(id);

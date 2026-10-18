@@ -275,6 +275,21 @@
           <button class="btn btn-primary" id="saveOverUsageBtn" data-i18n="settings.saveUsage"></button>
         </div>
 
+        <!-- Account scheduling -->
+        <div class="card">
+          <div class="card-header"><span class="card-title" data-i18n="settings.scheduling"></span></div>
+          <div class="form-group">
+            <label data-i18n="settings.schedulingMode"></label>
+            <select id="schedulingMode">
+              <option value="sticky" data-i18n="settings.schedulingSticky"></option>
+              <option value="round_robin" data-i18n="settings.schedulingRoundRobin"></option>
+              <option value="priority" data-i18n="settings.schedulingPriority"></option>
+            </select>
+            <small data-i18n="settings.schedulingHint"></small>
+          </div>
+          <button class="btn btn-primary" id="saveSchedulingBtn" data-i18n="settings.saveScheduling"></button>
+        </div>
+
         <!-- Simulated prompt cache -->
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="settings.cacheSim"></span></div>

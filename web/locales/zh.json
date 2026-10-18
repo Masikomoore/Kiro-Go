@@ -1,7 +1,6 @@
 {
   "login.title": "登录",
   "login.subtitle": "请输入管理密码以继续",
-
   "login.password": "管理密码",
   "login.passwordPlaceholder": "输入密码",
   "login.submit": "登录",
@@ -202,7 +201,7 @@
   "detail.saveFailed": "保存失败",
   "detail.generateFailed": "生成失败",
   "detail.weight": "请求权重",
-  "detail.weightHint": "0-1=普通, 2+=高优先级",
+  "detail.weightHint": "同一优先级内按权重分配请求，权重越大分到越多。0-1=普通",
   "detail.overage": "超额调用（Overages）",
   "detail.overageHint": "点击开关将调用 AWS Q setUserPreference，立即在 Kiro 后台开/关 Overages",
   "detail.overageStatus": "当前状态",
@@ -521,5 +520,16 @@
   "errors.typeSuspended": "封禁",
   "errors.typeOverage": "超额",
   "errors.typeProfile": "配置",
-  "errors.typeUnknown": "未知"
+  "errors.typeUnknown": "未知",
+  "settings.scheduling": "账号调度",
+  "settings.schedulingMode": "调度模式",
+  "settings.schedulingSticky": "会话粘性（推荐）",
+  "settings.schedulingRoundRobin": "轮替",
+  "settings.schedulingPriority": "固定优先级",
+  "settings.schedulingHint": "会话粘性：同一会话（Claude Code 会话 ID，没有则按 API key）固定使用同一个账号，命中上游缓存，首字更快；账号冷却或出错时自动换号，新会话轮流分配。轮替：每个请求换下一个账号。固定优先级：所有请求都用排在最前、优先级最高的可用账号，出错才换号（kiro-RS 默认）。三种模式都先用优先级数字最小的一组账号。保存后下一次请求生效。",
+  "settings.saveScheduling": "保存调度设置",
+  "settings.schedulingSaved": "调度设置已保存",
+  "detail.priority": "调度优先级",
+  "detail.priorityHint": "数字越小越优先，默认 0（最高）。只有这一级的账号都不可用时，才会用下一级",
+  "accounts.priorityShort": "优先级"
 }

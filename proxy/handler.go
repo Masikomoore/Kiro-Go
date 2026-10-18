@@ -2662,6 +2662,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"hasToken":          accountBearerToken(&a) != "",
 			"machineId":         a.MachineId,
 			"weight":            a.Weight,
+			"priority":          a.Priority,
 			"overageStatus":     a.OverageStatus,
 			"overageCapability": a.OverageCapability,
 			"overageCap":        a.OverageCap,
@@ -2771,6 +2772,9 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	}
 	if v, ok := updates["weight"].(float64); ok {
 		existing.Weight = int(v)
+	}
+	if v, ok := updates["priority"].(float64); ok {
+		existing.Priority = max(0, int(v))
 	}
 	if v, ok := updates["proxyURL"].(string); ok {
 		existing.ProxyURL = v
@@ -4119,7 +4123,7 @@ func compatEffectiveSettings(c config.CompatConfig) map[string]interface{} {
 		"promptCacheMaxEntries":          c.PromptCacheMaxEntries,
 		"simulateAnthropicCache":         c.SimulateAnthropicCache,
 		"simulateOpenAICache":            c.SimulateOpenAICache,
-		"accountAffinity":                c.AccountAffinity,
+		"schedulingMode":                 c.SchedulingMode,
 	}
 }
 
@@ -4465,6 +4469,7 @@ func (h *Handler) apiGetAccountFull(w http.ResponseWriter, r *http.Request, id s
 		"expiresAt":         account.ExpiresAt,
 		"machineId":         account.MachineId,
 		"weight":            account.Weight,
+		"priority":          account.Priority,
 		"overageStatus":     account.OverageStatus,
 		"overageCapability": account.OverageCapability,
 		"overageCap":        account.OverageCap,

@@ -60,10 +60,9 @@ func TestNextAccountMovesOnWhenPreferredIsExcluded(t *testing.T) {
 	}
 }
 
-func TestNextAccountRotatesWhenAffinityOff(t *testing.T) {
+func TestNextAccountRoundRobinModeRotates(t *testing.T) {
 	h := newAffinityTestHandler(t, 3)
-	off := false
-	if err := config.UpdateCompatSettings(config.CompatSettings{AccountAffinity: &off}); err != nil {
+	if err := config.UpdateCompatSettings(config.CompatSettings{SchedulingMode: config.SchedulingRoundRobin}); err != nil {
 		t.Fatalf("UpdateCompatSettings: %v", err)
 	}
 	ctx := withAccountAffinityKey(context.Background(), "sess:rotate")
@@ -71,8 +70,25 @@ func TestNextAccountRotatesWhenAffinityOff(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		seen[h.nextAccount(ctx, "claude-sonnet-4.5", nil).ID] = true
 	}
-	if len(seen) < 2 {
-		t.Fatalf("affinity off should rotate, saw %v", seen)
+	if len(seen) != 3 {
+		t.Fatalf("round_robin should use all 3 accounts, saw %v", seen)
+	}
+}
+
+func TestNextAccountPriorityModeStaysOnFirstAccount(t *testing.T) {
+	h := newAffinityTestHandler(t, 3)
+	if err := config.UpdateCompatSettings(config.CompatSettings{SchedulingMode: config.SchedulingPriority}); err != nil {
+		t.Fatalf("UpdateCompatSettings: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		// Different conversations, same account: priority ignores sessions.
+		ctx := withAccountAffinityKey(context.Background(), fmt.Sprintf("sess:%d", i))
+		if got := h.nextAccount(ctx, "claude-sonnet-4.5", nil); got == nil || got.ID != "acc-0" {
+			t.Fatalf("request %d: expected acc-0, got %v", i, got)
+		}
+	}
+	if got := h.nextAccount(context.Background(), "claude-sonnet-4.5", map[string]bool{"acc-0": true}); got == nil || got.ID != "acc-1" {
+		t.Fatalf("expected failover to acc-1, got %v", got)
 	}
 }
 
