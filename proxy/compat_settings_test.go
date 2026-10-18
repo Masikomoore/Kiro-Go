@@ -58,7 +58,7 @@ func TestAdminCacheSwitchesPreserveOtherCompat(t *testing.T) {
 	h := &Handler{}
 	rec := httptest.NewRecorder()
 	h.apiUpdateSettings(rec, httptest.NewRequest(http.MethodPost, "/settings",
-		strings.NewReader(`{"compat":{"promptCacheMode":"read_only","structuredToolHistory":true,"simulateAnthropicCache":false,"simulateOpenAICache":true}}`)))
+		strings.NewReader(`{"compat":{"promptCacheMode":"read_only","structuredToolHistory":true,"simulateAnthropicCache":false,"implicitAnthropicCache":false}}`)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -74,7 +74,7 @@ func TestAdminCacheSwitchesPreserveOtherCompat(t *testing.T) {
 	if got.Compat.PromptCacheMode != "read_only" || !got.Compat.StructuredToolHistory {
 		t.Fatalf("other compat fields changed: %+v", got.Compat)
 	}
-	if got.Effective["simulateAnthropicCache"] != false || got.Effective["simulateOpenAICache"] != true || got.Effective["promptCacheMode"] != "read_only" {
+	if got.Effective["simulateAnthropicCache"] != false || got.Effective["implicitAnthropicCache"] != false || got.Effective["promptCacheMode"] != "read_only" {
 		t.Fatalf("effective = %v", got.Effective)
 	}
 }

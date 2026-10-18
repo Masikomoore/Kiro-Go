@@ -1601,7 +1601,7 @@
     storedCompat = d.compat && typeof d.compat === 'object' ? d.compat : {};
     const cacheEff = d.compatEffective || {};
     $('simulateAnthropicCache').checked = cacheEff.simulateAnthropicCache !== false;
-    $('simulateOpenAICache').checked = cacheEff.simulateOpenAICache === true;
+    $('implicitAnthropicCache').checked = cacheEff.implicitAnthropicCache !== false;
     $('schedulingMode').value = cacheEff.schedulingMode || 'sticky';
     await Promise.all([loadThinkingConfig(), loadEndpointConfig(), loadProxyConfig(), loadPromptFilter(), loadApiKeys()]);
     refreshCustomSelects();
@@ -1727,7 +1727,7 @@
   async function saveCacheSim() {
     const compat = Object.assign({}, storedCompat);
     compat.simulateAnthropicCache = $('simulateAnthropicCache').checked;
-    compat.simulateOpenAICache = $('simulateOpenAICache').checked;
+    compat.implicitAnthropicCache = $('implicitAnthropicCache').checked;
     try {
       const res = await api('/settings', { method: 'POST', body: JSON.stringify({ compat }) });
       const d = await res.json().catch(() => ({}));

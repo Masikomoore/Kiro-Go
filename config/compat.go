@@ -24,6 +24,10 @@ type CompatSettings struct {
 	// | round_robin | priority. See the Scheduling* constants.
 	SchedulingMode string `json:"schedulingMode,omitempty"`
 
+	// ImplicitAnthropicCache simulates prompt cache for /v1/messages requests
+	// that carry no cache_control, using message boundaries. Default on.
+	ImplicitAnthropicCache *bool `json:"implicitAnthropicCache,omitempty"`
+
 	// Experimental, default off.
 	StructuredToolHistory   bool   `json:"structuredToolHistory,omitempty"`
 	NormalizeKiroToolParams bool   `json:"normalizeKiroToolParams,omitempty"`
@@ -36,10 +40,9 @@ type CompatSettings struct {
 	PromptCacheScope      string `json:"promptCacheScope,omitempty"`
 	PromptCacheMaxEntries int    `json:"promptCacheMaxEntries,omitempty"`
 
-	// Per-protocol simulation switches. Nil uses the default: Anthropic on,
-	// OpenAI off. These do not change what Kiro charges.
+	// SimulateAnthropicCache reports simulated cache usage on /v1/messages.
+	// Nil means on. It does not change what Kiro charges.
 	SimulateAnthropicCache *bool `json:"simulateAnthropicCache,omitempty"`
-	SimulateOpenAICache    *bool `json:"simulateOpenAICache,omitempty"`
 }
 
 const (
@@ -83,8 +86,8 @@ type CompatConfig struct {
 	PromptCacheScope        string
 	PromptCacheMaxEntries   int
 	SimulateAnthropicCache  bool
-	SimulateOpenAICache     bool
 	SchedulingMode          string
+	ImplicitAnthropicCache  bool
 }
 
 func boolOrDefault(v *bool, def bool) bool {
@@ -111,8 +114,8 @@ func ResolveCompatSettings(s CompatSettings) CompatConfig {
 		PromptCacheScope:        PromptCacheScopeAuto,
 		PromptCacheMaxEntries:   defaultPromptCacheMaxEntries,
 		SimulateAnthropicCache:  boolOrDefault(s.SimulateAnthropicCache, true),
-		SimulateOpenAICache:     boolOrDefault(s.SimulateOpenAICache, false),
 		SchedulingMode:          SchedulingSticky,
+		ImplicitAnthropicCache:  boolOrDefault(s.ImplicitAnthropicCache, true),
 	}
 	if s.AccountThrottleCooldownMinutes > 0 {
 		out.AccountThrottleCooldown = time.Duration(s.AccountThrottleCooldownMinutes) * time.Minute

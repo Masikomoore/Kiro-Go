@@ -136,11 +136,11 @@ The `compat` section of `config.json` (also `GET`/`POST /admin/api/settings` wit
 | `builderIdPlaceholderArn` | `off` | `on_demand` or `always`: placeholder profileArn for Builder ID/social accounts |
 | `promptCacheMode` | `full` | Anthropic only. `read_only` reports cache reads but no cache creation; `off` reports no cache fields |
 | `simulateAnthropicCache` | `true` | Anthropic `/v1/messages` simulated cache. Off omits cache usage fields. Applies on the next request |
-| `simulateOpenAICache` | `false` | OpenAI Chat Completions and Responses simulated cache reads (`cached_tokens` inside the prompt total, no cache-write charge). Applies on the next request |
+| `implicitAnthropicCache` | `true` | Also simulate `/v1/messages` requests that carry no `cache_control` (for example WorkBuddy through Sub2API's Chat Completions → Anthropic conversion). Breakpoints follow kiro-RS-Tool's automatic prefix chain: end of tools+system, then the end of every message except the last, 5-minute TTL |
 | `promptCacheScope` | `auto` | `auto`: Claude Code session, then API key, then account; `account`: per upstream account |
 | `promptCacheMaxEntries` | `20000` | LRU cap of the simulated prompt cache |
 
-Kiro returns no cache token counts, so prompt-cache usage is simulated. Anthropic uses `cache_control` prefixes. OpenAI treats the system prompt, tools, and each completed message as a prefix and reports only cache reads. Neither switch changes Kiro credits. Input, cache creation, and cache read on the Anthropic path always add up to the real input total. The simulated cache is saved to `prompt_cache.json` next to `config.json`. The admin panel under Settings saves these two switches without a restart.
+Kiro caches prompts upstream (repeated turns cost fewer credits) but returns no cache token counts, so prompt-cache usage on `/v1/messages` is simulated. Requests with `cache_control` use its breakpoints; requests without it use message boundaries when `implicitAnthropicCache` is on. OpenAI `/v1/chat/completions` and `/v1/responses` report no cache fields. The switches do not change Kiro credits. Input, cache creation, and cache read always add up to the real input total. The simulated cache is saved to `prompt_cache.json` next to `config.json`. The admin panel under Settings saves these switches without a restart.
 
 ## Outbound Proxy
 

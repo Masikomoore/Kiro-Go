@@ -1440,6 +1440,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
+		logPromptCacheUsage(model, cacheProfile, cacheUsage, inputTokens, outputTokens, credits)
 		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
 		stopReason := mapClaudeStopReason(upstreamStopReason, len(toolUses))
@@ -1731,6 +1732,7 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
+		logPromptCacheUsage(model, cacheProfile, cacheUsage, inputTokens, outputTokens, credits)
 		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
 		responseThinkingContent := rawThinkingContent
@@ -1814,17 +1816,16 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	kiroPayload := OpenAIToKiro(&req, thinking)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
-	cacheProfile := h.openAICacheProfile(&req, estimatedInputTokens, r, apiKeyID)
 	ctx := withAccountAffinityKey(r.Context(), accountAffinityKey(nil, r, apiKeyID))
 	if req.Stream {
-		h.handleOpenAIStream(ctx, w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, cacheProfile)
+		h.handleOpenAIStream(ctx, w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID)
 	} else {
-		h.handleOpenAINonStream(ctx, w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, cacheProfile)
+		h.handleOpenAINonStream(ctx, w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID)
 	}
 }
 
 // handleOpenAIStream OpenAI 流式响应
-func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string, cacheProfile *promptCacheProfile) {
+func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -2246,7 +2247,11 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				"delta":         map[string]interface{}{},
 				"finish_reason": finishReason,
 			}},
-			"usage": openAIUsageMap(inputTokens, outputTokens, h.commitOpenAICache(account.ID, cacheProfile, inputTokens)),
+			"usage": map[string]int{
+				"prompt_tokens":     inputTokens,
+				"completion_tokens": outputTokens,
+				"total_tokens":      inputTokens + outputTokens,
+			},
 		}
 		data, _ := json.Marshal(chunk)
 		fmt.Fprintf(w, "data: %s\n\n", string(data))
@@ -2259,7 +2264,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
-func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string, cacheProfile *promptCacheProfile) {
+func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string) {
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
@@ -2366,7 +2371,6 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 
 		thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 		resp := KiroToOpenAIResponseWithReasoning(finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model, thinkingFormat, upstreamStopReason)
-		resp["usage"] = openAIUsageMap(inputTokens, outputTokens, h.commitOpenAICache(account.ID, cacheProfile, inputTokens))
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(resp)
 		return
@@ -4122,8 +4126,8 @@ func compatEffectiveSettings(c config.CompatConfig) map[string]interface{} {
 		"promptCacheScope":               c.PromptCacheScope,
 		"promptCacheMaxEntries":          c.PromptCacheMaxEntries,
 		"simulateAnthropicCache":         c.SimulateAnthropicCache,
-		"simulateOpenAICache":            c.SimulateOpenAICache,
 		"schedulingMode":                 c.SchedulingMode,
+		"implicitAnthropicCache":         c.ImplicitAnthropicCache,
 	}
 }
 

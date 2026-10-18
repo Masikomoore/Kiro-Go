@@ -113,6 +113,9 @@ type promptCacheProfile struct {
 	// Scope isolates cache entries, e.g. "sess:<id>" or "key:<id>". Empty
 	// means the upstream account chosen for the request.
 	Scope string
+	// Implicit marks a profile built from message boundaries because the
+	// request carried no cache_control.
+	Implicit bool
 }
 
 func minCacheableTokensForModel(model string) int {
@@ -190,22 +193,26 @@ func (t *promptCacheTracker) BuildClaudeProfile(req *ClaudeRequest, totalInputTo
 	if req == nil || compat.PromptCacheMode == config.PromptCacheModeOff || !compat.SimulateAnthropicCache {
 		return nil
 	}
-	return t.profileFromBlocks(req.Model, totalInputTokens, flattenClaudeCacheBlocks(req))
+	return t.profileFromBlocks(req.Model, totalInputTokens, flattenClaudeCacheBlocks(req), compat.ImplicitAnthropicCache)
 }
 
-// BuildOpenAIProfile simulates a read-only prefix cache for Chat Completions
-// and Responses requests, which do not send cache_control. The switch defaults
-// off. A hit does not change what Kiro charges.
-func (t *promptCacheTracker) BuildOpenAIProfile(req *OpenAIRequest, totalInputTokens int) *promptCacheProfile {
-	if req == nil || !config.GetCompatConfig().SimulateOpenAICache {
-		return nil
-	}
-	return t.profileFromBlocks(req.Model, totalInputTokens, flattenOpenAICacheBlocks(req))
-}
-
-func (t *promptCacheTracker) profileFromBlocks(model string, totalInputTokens int, blocks []cacheablePromptBlock) *promptCacheProfile {
+// profileFromBlocks hashes the prompt prefix and records a breakpoint at each
+// cacheable boundary. With allowImplicit and no cache_control anywhere in the
+// request, boundaries follow kiro-RS-Tool's automatic prefix chain: the end of
+// tools+system and the end of every message except the last (the new input),
+// with the default 5-minute TTL. Clients that reach this proxy through a
+// protocol converter (Sub2API turning Chat Completions into /v1/messages)
+// never send cache_control, although Kiro caches their prefixes upstream.
+func (t *promptCacheTracker) profileFromBlocks(model string, totalInputTokens int, blocks []cacheablePromptBlock, allowImplicit bool) *promptCacheProfile {
 	if len(blocks) == 0 {
 		return nil
+	}
+	implicit := allowImplicit
+	for _, block := range blocks {
+		if block.TTL > 0 {
+			implicit = false
+			break
+		}
 	}
 
 	hasher := sha256.New()
@@ -224,7 +231,11 @@ func (t *promptCacheTracker) profileFromBlocks(model string, totalInputTokens in
 		//      boundary becomes an implicit breakpoint so that multi-turn
 		//      conversations can hit earlier stored prefixes.
 		breakpointTTL := time.Duration(0)
-		if block.TTL > 0 {
+		if implicit {
+			if block.PreambleEnd || (block.IsMessageEnd && !block.FinalMessage) {
+				breakpointTTL = defaultPromptCacheTTL
+			}
+		} else if block.TTL > 0 {
 			breakpointTTL = block.TTL
 			activeTTL = block.TTL
 		} else if block.IsMessageEnd && activeTTL > 0 {
@@ -256,6 +267,7 @@ func (t *promptCacheTracker) profileFromBlocks(model string, totalInputTokens in
 		Breakpoints:      breakpoints,
 		TotalInputTokens: totalInputTokens,
 		Model:            model,
+		Implicit:         implicit,
 	}
 }
 
@@ -519,6 +531,10 @@ type cacheablePromptBlock struct {
 	Tokens       int
 	TTL          time.Duration
 	IsMessageEnd bool
+	// PreambleEnd marks the last tools/system block; FinalMessage marks the
+	// blocks of the last message. Only implicit breakpoints read them.
+	PreambleEnd  bool
+	FinalMessage bool
 }
 
 func flattenClaudeCacheBlocks(req *ClaudeRequest) []cacheablePromptBlock {
@@ -542,85 +558,21 @@ func flattenClaudeCacheBlocks(req *ClaudeRequest) []cacheablePromptBlock {
 	}
 
 	appendSystemCacheBlocks(&blocks, req.System)
+	if len(blocks) > 1 {
+		blocks[len(blocks)-1].PreambleEnd = true
+	}
 
 	for messageIndex, msg := range req.Messages {
+		start := len(blocks)
 		appendMessageCacheBlocks(&blocks, messageIndex, msg)
+		if messageIndex == len(req.Messages)-1 {
+			for i := start; i < len(blocks); i++ {
+				blocks[i].FinalMessage = true
+			}
+		}
 	}
 
 	return blocks
-}
-
-func flattenOpenAICacheBlocks(req *OpenAIRequest) []cacheablePromptBlock {
-	blocks := []cacheablePromptBlock{{
-		Value: map[string]interface{}{
-			"kind":  "openai_prelude",
-			"model": req.Model,
-		},
-	}}
-	for toolIndex, tool := range req.Tools {
-		blocks = append(blocks, cacheablePromptBlock{
-			Value: map[string]interface{}{
-				"kind":        "openai_tool",
-				"tool_index":  toolIndex,
-				"name":        tool.Function.Name,
-				"description": tool.Function.Description,
-				"parameters":  tool.Function.Parameters,
-			},
-			Tokens: estimateApproxTokens(tool.Function.Name) + estimateApproxTokens(tool.Function.Description) + estimateJSONTokens(tool.Function.Parameters),
-			TTL:    defaultPromptCacheTTL,
-		})
-	}
-	for messageIndex, msg := range req.Messages {
-		content := openAICacheContent(msg.Content)
-		calls := make([]map[string]string, 0, len(msg.ToolCalls))
-		tokens := estimateOpenAIContentTokens(content)
-		for _, call := range msg.ToolCalls {
-			calls = append(calls, map[string]string{
-				"name":      call.Function.Name,
-				"arguments": call.Function.Arguments,
-			})
-			tokens += estimateApproxTokens(call.Function.Name) + estimateApproxTokens(call.Function.Arguments)
-		}
-		blocks = append(blocks, cacheablePromptBlock{
-			Value: map[string]interface{}{
-				"kind":          "openai_message",
-				"message_index": messageIndex,
-				"role":          msg.Role,
-				"content":       content,
-				"tool_calls":    calls,
-			},
-			Tokens:       tokens,
-			TTL:          defaultPromptCacheTTL,
-			IsMessageEnd: true,
-		})
-	}
-	return blocks
-}
-
-// openAICacheContent drops reasoning parts. Their text changes every turn and
-// would make an otherwise stable prefix miss. tool_call ids are omitted by the
-// caller for the same reason.
-func openAICacheContent(content interface{}) interface{} {
-	parts, ok := content.([]interface{})
-	if !ok {
-		return content
-	}
-	kept := make([]interface{}, 0, len(parts))
-	for _, part := range parts {
-		block, ok := part.(map[string]interface{})
-		if !ok {
-			kept = append(kept, part)
-			continue
-		}
-		kind, _ := block["type"].(string)
-		switch strings.ToLower(kind) {
-		case "reasoning", "reasoning_text", "reasoning_content":
-			continue
-		default:
-			kept = append(kept, part)
-		}
-	}
-	return kept
 }
 
 func buildCachePreludeBlock(req *ClaudeRequest) cacheablePromptBlock {
@@ -892,58 +844,31 @@ func (r promptCacheReport) usageMap(inputTokens, outputTokens int, webSearch boo
 	return m
 }
 
+// logPromptCacheUsage writes one line per Anthropic response: how the request
+// was profiled, the split reported downstream, and the credits Kiro billed.
+// Kiro returns no cache token counts, so these lines are the data for
+// checking the simulation against what upstream actually charged. Session
+// and key IDs are not logged.
+func logPromptCacheUsage(model string, profile *promptCacheProfile, usage promptCacheUsage, inputTokens, outputTokens int, credits float64) {
+	kind, scope, breakpoints := "none", "-", 0
+	split := promptCacheSplit{Input: inputTokens}
+	if profile != nil {
+		kind, scope, breakpoints = "explicit", "acct", len(profile.Breakpoints)
+		if profile.Implicit {
+			kind = "implicit"
+		}
+		if i := strings.IndexByte(profile.Scope, ':'); i > 0 {
+			scope = profile.Scope[:i]
+		}
+		split = usage.split(inputTokens)
+	}
+	logger.Infof("[PromptCache] model=%s profile=%s scope=%s breakpoints=%d input=%d read=%d creation=%d total=%d output=%d credits=%.4f",
+		model, kind, scope, breakpoints, split.Input, split.Read, split.Creation, inputTokens, outputTokens, credits)
+}
+
 // billedClaudeInputTokens is the uncached part of the reported input total.
 func billedClaudeInputTokens(inputTokens int, usage promptCacheUsage) int {
 	return usage.split(inputTokens).Input
-}
-
-// openAICachedTokens is the read portion of an OpenAI prompt. Creation is not
-// reported: these clients did not ask for cache writes, and Sub2API bills
-// prompt_tokens_details.cached_tokens as a cache read inside prompt_tokens.
-func openAICachedTokens(total int, usage promptCacheUsage) int {
-	usage.CacheCreationInputTokens = 0
-	usage.CacheCreation5mInputTokens = 0
-	usage.CacheCreation1hInputTokens = 0
-	read := usage.split(total).Read
-	if read < 0 {
-		return 0
-	}
-	if total >= 0 && read > total {
-		return total
-	}
-	return read
-}
-
-func openAIUsageMap(inputTokens, outputTokens, cached int) map[string]interface{} {
-	usage := map[string]interface{}{
-		"prompt_tokens":     inputTokens,
-		"completion_tokens": outputTokens,
-		"total_tokens":      inputTokens + outputTokens,
-	}
-	if cached > 0 {
-		usage["prompt_tokens_details"] = map[string]int{"cached_tokens": cached}
-	}
-	return usage
-}
-
-func (h *Handler) openAICacheProfile(req *OpenAIRequest, total int, r *http.Request, apiKeyID string) *promptCacheProfile {
-	if h == nil || h.promptCache == nil {
-		return nil
-	}
-	profile := h.promptCache.BuildOpenAIProfile(req, total)
-	if profile != nil {
-		profile.Scope = promptCacheScope(nil, r, apiKeyID)
-	}
-	return profile
-}
-
-func (h *Handler) commitOpenAICache(accountID string, profile *promptCacheProfile, inputTokens int) int {
-	if h == nil || h.promptCache == nil || profile == nil {
-		return 0
-	}
-	usage := h.promptCache.Compute(accountID, profile)
-	h.promptCache.Update(accountID, profile)
-	return openAICachedTokens(inputTokens, usage)
 }
 
 // buildClaudeUsageMap reports usage against the real input total: input,

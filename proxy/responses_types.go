@@ -56,15 +56,10 @@ type ResponseContentPart struct {
 	Text string `json:"text,omitempty"`
 }
 
-type ResponsesInputTokensDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"`
-}
-
 type ResponsesUsage struct {
-	InputTokens        int                          `json:"input_tokens"`
-	OutputTokens       int                          `json:"output_tokens"`
-	TotalTokens        int                          `json:"total_tokens"`
-	InputTokensDetails *ResponsesInputTokensDetails `json:"input_tokens_details,omitempty"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
 }
 
 type ResponsesError struct {

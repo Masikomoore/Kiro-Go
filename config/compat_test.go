@@ -17,14 +17,13 @@ func TestResolveCompatSettingsDefaults(t *testing.T) {
 		c.PromptCacheMode != PromptCacheModeFull || c.PromptCacheScope != PromptCacheScopeAuto || c.PromptCacheMaxEntries != 20000 {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
-	if !c.SimulateAnthropicCache || c.SimulateOpenAICache {
-		t.Fatalf("cache switches = anthropic %v openai %v", c.SimulateAnthropicCache, c.SimulateOpenAICache)
+	if !c.SimulateAnthropicCache || !c.ImplicitAnthropicCache {
+		t.Fatalf("cache switches = anthropic %v implicit %v", c.SimulateAnthropicCache, c.ImplicitAnthropicCache)
 	}
 	off := false
-	on := true
-	c = ResolveCompatSettings(CompatSettings{SimulateAnthropicCache: &off, SimulateOpenAICache: &on})
-	if c.SimulateAnthropicCache || !c.SimulateOpenAICache {
-		t.Fatalf("cache switch overrides = anthropic %v openai %v", c.SimulateAnthropicCache, c.SimulateOpenAICache)
+	c = ResolveCompatSettings(CompatSettings{SimulateAnthropicCache: &off, ImplicitAnthropicCache: &off})
+	if c.SimulateAnthropicCache || c.ImplicitAnthropicCache {
+		t.Fatalf("cache switch overrides = anthropic %v implicit %v", c.SimulateAnthropicCache, c.ImplicitAnthropicCache)
 	}
 
 	c = ResolveCompatSettings(CompatSettings{ToolChunkingHints: &off, AccountThrottleCooldownMinutes: 3, PromptCacheMode: "READ_ONLY"})
