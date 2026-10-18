@@ -201,6 +201,18 @@ type KiroPayload struct {
 	// in tool_use responses so the client can match them to its tool registry.
 	// Not serialized to the Kiro API request body.
 	ToolNameMap map[string]string `json:"-"`
+
+	// Shrink records what truncatePayloadToLimit did, for diagnostics only.
+	Shrink payloadShrinkInfo `json:"-"`
+}
+
+// payloadShrinkInfo describes how a payload was reduced to fit
+// maxPayloadBytes. Stage is "" when it already fit, else the last step
+// applied: images, compact, drop (oldest turns removed), or current.
+type payloadShrinkInfo struct {
+	Stage         string
+	DroppedTurns  int
+	OriginalBytes int
 }
 
 type KiroUserInputMessage struct {

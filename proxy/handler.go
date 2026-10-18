@@ -79,6 +79,8 @@ type Handler struct {
 	shutdownOnce    sync.Once
 	// affinity keeps a conversation on the upstream account that served it.
 	affinity *accountAffinity
+	// cacheDiag compares consecutive requests of a conversation.
+	cacheDiag *cacheDiagTracker
 	// 模型缓存
 	cachedModels       []ModelInfo
 	modelsCacheMu      sync.RWMutex
@@ -299,6 +301,7 @@ func NewHandler() *Handler {
 		stopPromptCache:      make(chan struct{}),
 		stopConfigSave:       make(chan struct{}),
 		affinity:             newAccountAffinity(),
+		cacheDiag:            newCacheDiagTracker(),
 		promptCache:          newPromptCacheTracker(defaultPromptCacheTTL),
 		microsoftSelections:  make(map[string]*microsoftProfileSelection),
 		microsoftCanceled:    make(map[string]time.Time),
@@ -954,6 +957,7 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 
 	// 转换请求
 	kiroPayload := ClaudeToKiro(&req, thinking)
+	h.cacheDiag.observe(&req, kiroPayload)
 
 	// Stream or non-stream
 	if req.Stream {

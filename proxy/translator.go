@@ -1876,7 +1876,9 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 	if payload == nil {
 		return
 	}
-	if payloadByteSize(payload) <= maxPayloadBytes {
+	originalBytes := payloadByteSize(payload)
+	payload.Shrink = payloadShrinkInfo{OriginalBytes: originalBytes}
+	if originalBytes <= maxPayloadBytes {
 		return
 	}
 
@@ -1888,12 +1890,15 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 
 	// Cheaper reductions first: old images, then the head and tail of very
 	// large history text. Whole turns are dropped only if that is not enough.
+	payload.Shrink.Stage = "images"
 	if dropOldHistoryImages(history, primingCount) && payloadByteSize(payload) <= maxPayloadBytes {
 		return
 	}
+	payload.Shrink.Stage = "compact"
 	if compactHistoryText(history, primingCount) && payloadByteSize(payload) <= maxPayloadBytes {
 		return
 	}
+	payload.Shrink.Stage = "drop"
 
 	priming := history[:primingCount]
 	conversation := history[primingCount:]
@@ -1935,6 +1940,7 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 
 	tail := conversation[keepFrom:]
 	tail = dropLeadingAssistant(tail)
+	payload.Shrink.DroppedTurns = len(conversation) - len(tail)
 
 	rebuilt := make([]KiroHistoryMessage, 0, len(priming)+1+len(tail))
 	rebuilt = append(rebuilt, priming...)
@@ -1947,6 +1953,7 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 	// If still too large (current message or retained tail alone exceeds the
 	// limit), shrink the current message content as a last resort.
 	if payloadByteSize(payload) > maxPayloadBytes {
+		payload.Shrink.Stage = "current"
 		truncateCurrentMessage(payload)
 	}
 }
