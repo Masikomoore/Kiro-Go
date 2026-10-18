@@ -210,26 +210,10 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 		idx := atomic.AddUint64(&p.currentIndex, 1) % uint64(n)
 		acc := &p.accounts[idx]
 
-		if excluded != nil && excluded[acc.ID] {
-			seen[acc.ID] = true
-			continue
-		}
 		if seen[acc.ID] {
 			continue
 		}
-		if !p.accountHasModel(acc.ID, model) {
-			seen[acc.ID] = true
-			continue
-		}
-		if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
-			seen[acc.ID] = true
-			continue
-		}
-		if acc.ExpiresAt > 0 && time.Now().Unix() > acc.ExpiresAt-tokenRefreshSkewSeconds {
-			seen[acc.ID] = true
-			continue
-		}
-		if isQuotaBlocked(*acc, allowOverUsage) {
+		if !p.readyLocked(acc, model, excluded, now, allowOverUsage) {
 			seen[acc.ID] = true
 			continue
 		}
@@ -260,6 +244,49 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 		}
 	}
 	return best
+}
+
+// readyLocked reports whether acc can serve model right now: not excluded,
+// lists the model, not cooling down, token not about to expire, and not
+// blocked by quota. The caller holds p.mu.
+func (p *AccountPool) readyLocked(acc *config.Account, model string, excluded map[string]bool, now time.Time, allowOverUsage bool) bool {
+	if excluded != nil && excluded[acc.ID] {
+		return false
+	}
+	if !p.accountHasModel(acc.ID, model) {
+		return false
+	}
+	if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
+		return false
+	}
+	if acc.ExpiresAt > 0 && now.Unix() > acc.ExpiresAt-tokenRefreshSkewSeconds {
+		return false
+	}
+	return !isQuotaBlocked(*acc, allowOverUsage)
+}
+
+// GetPreferredForModelExcluding returns the account preferredID when it is
+// ready to serve model, and otherwise the next account in rotation. It keeps a
+// conversation on one account so the upstream prompt cache, which is per
+// account, keeps hitting.
+func (p *AccountPool) GetPreferredForModelExcluding(model string, excluded map[string]bool, preferredID string) *config.Account {
+	if preferredID != "" {
+		allowOverUsage := config.GetAllowOverUsage()
+		p.mu.RLock()
+		for i := range p.accounts {
+			acc := &p.accounts[i]
+			if acc.ID != preferredID {
+				continue
+			}
+			if p.readyLocked(acc, model, excluded, time.Now(), allowOverUsage) {
+				p.mu.RUnlock()
+				return acc
+			}
+			break
+		}
+		p.mu.RUnlock()
+	}
+	return p.GetNextForModelExcluding(model, excluded)
 }
 
 // GetByID 根据 ID 获取账号

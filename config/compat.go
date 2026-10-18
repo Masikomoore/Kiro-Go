@@ -20,6 +20,9 @@ type CompatSettings struct {
 	ThinkingSignature     *bool `json:"thinkingSignature,omitempty"`
 	ToolUseXMLFilter      *bool `json:"toolUseXmlFilter,omitempty"`
 	ImageDedup            *bool `json:"imageDedup,omitempty"`
+	// AccountAffinity keeps each conversation (Claude Code session, else API
+	// key) on the account that served it, so the upstream prompt cache hits.
+	AccountAffinity *bool `json:"accountAffinity,omitempty"`
 
 	// Experimental, default off.
 	StructuredToolHistory   bool   `json:"structuredToolHistory,omitempty"`
@@ -72,6 +75,7 @@ type CompatConfig struct {
 	PromptCacheMaxEntries   int
 	SimulateAnthropicCache  bool
 	SimulateOpenAICache     bool
+	AccountAffinity         bool
 }
 
 func boolOrDefault(v *bool, def bool) bool {
@@ -99,6 +103,7 @@ func ResolveCompatSettings(s CompatSettings) CompatConfig {
 		PromptCacheMaxEntries:   defaultPromptCacheMaxEntries,
 		SimulateAnthropicCache:  boolOrDefault(s.SimulateAnthropicCache, true),
 		SimulateOpenAICache:     boolOrDefault(s.SimulateOpenAICache, false),
+		AccountAffinity:         boolOrDefault(s.AccountAffinity, true),
 	}
 	if s.AccountThrottleCooldownMinutes > 0 {
 		out.AccountThrottleCooldown = time.Duration(s.AccountThrottleCooldownMinutes) * time.Minute

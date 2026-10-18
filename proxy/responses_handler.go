@@ -115,14 +115,15 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	cacheProfile := h.openAICacheProfile(openaiReq, estimatedInputTokens, r, apiKeyID)
 	respID := generateResponseID()
+	ctx := withAccountAffinityKey(r.Context(), accountAffinityKey(nil, r, apiKeyID))
 
 	if req.Stream {
-		h.handleResponsesStream(r.Context(), w, kiroPayload, actualModel, thinking, estimatedInputTokens,
+		h.handleResponsesStream(ctx, w, kiroPayload, actualModel, thinking, estimatedInputTokens,
 			apiKeyID, respID, &req, storedInputCopy, storeResponse, cacheProfile)
 		return
 	}
 
-	h.handleResponsesNonStream(r.Context(), w, kiroPayload, actualModel, thinking, estimatedInputTokens,
+	h.handleResponsesNonStream(ctx, w, kiroPayload, actualModel, thinking, estimatedInputTokens,
 		apiKeyID, respID, &req, storedInputCopy, storeResponse, cacheProfile)
 }
 
@@ -142,7 +143,7 @@ func (h *Handler) handleResponsesNonStream(
 		account := retryAccount
 		retryAccount = nil
 		if account == nil {
-			account = h.pool.GetNextForModelExcluding(model, excluded)
+			account = h.nextAccount(ctx, model, excluded)
 		}
 		if account == nil {
 			break
@@ -387,7 +388,7 @@ func (h *Handler) handleResponsesStream(
 		account := retryAccount
 		retryAccount = nil
 		if account == nil {
-			account = h.pool.GetNextForModelExcluding(model, excluded)
+			account = h.nextAccount(ctx, model, excluded)
 		}
 		if account == nil {
 			break

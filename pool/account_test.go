@@ -325,3 +325,27 @@ func TestReloadDropsOverQuotaAccountWhenAllowOverUsageDisabled(t *testing.T) {
 		t.Fatalf("expected over-quota account to be dropped, got %q", got.ID)
 	}
 }
+
+func TestGetPreferredForModelExcludingKeepsReadyAccount(t *testing.T) {
+	p := newTestPool(config.Account{ID: "a"}, config.Account{ID: "b"}, config.Account{ID: "c"})
+	for i := 0; i < 5; i++ {
+		if got := p.GetPreferredForModelExcluding("m", nil, "b"); got == nil || got.ID != "b" {
+			t.Fatalf("call %d: expected preferred account b, got %v", i, got)
+		}
+	}
+}
+
+func TestGetPreferredForModelExcludingFallsBack(t *testing.T) {
+	p := newTestPool(config.Account{ID: "a"}, config.Account{ID: "b"})
+	p.cooldowns["b"] = time.Now().Add(time.Minute)
+	if got := p.GetPreferredForModelExcluding("m", nil, "b"); got == nil || got.ID != "a" {
+		t.Fatalf("cooling-down preference: expected a, got %v", got)
+	}
+	delete(p.cooldowns, "b")
+	if got := p.GetPreferredForModelExcluding("m", map[string]bool{"b": true}, "b"); got == nil || got.ID != "a" {
+		t.Fatalf("excluded preference: expected a, got %v", got)
+	}
+	if got := p.GetPreferredForModelExcluding("m", nil, "gone"); got == nil {
+		t.Fatal("unknown preference must fall back to rotation")
+	}
+}

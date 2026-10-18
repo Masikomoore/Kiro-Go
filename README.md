@@ -128,6 +128,7 @@ The `compat` section of `config.json` (also `GET`/`POST /admin/api/settings` wit
 | `thinkingSignature` | `true` | Add a placeholder signature to thinking blocks for SDK clients |
 | `toolUseXmlFilter` | `true` | Strip `<tool_use>` XML leaked into answer text |
 | `imageDedup` | `true` | Send each identical image once |
+| `accountAffinity` | `true` | Keep each conversation (Claude Code session, else API key) on the account that served it, so Kiro's per-account prompt cache keeps hitting. Falls back to rotation when that account is cooling down or fails. `false` restores per-request round-robin |
 | `accountThrottleCooldownMinutes` | `10` | Cooldown after a 429 "suspicious activity" response for that account |
 | `structuredToolHistory` | `false` | Experimental: keep tool calls structured in history with placeholder tool specs |
 | `normalizeKiroToolParams` | `false` | Experimental: rename Kiro-style arguments (`path`, `oldStr`, ...) on Claude Code tools |

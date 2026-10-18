@@ -77,6 +77,8 @@ type Handler struct {
 	stopPromptCache chan struct{}
 	stopConfigSave  chan struct{}
 	shutdownOnce    sync.Once
+	// affinity keeps a conversation on the upstream account that served it.
+	affinity *accountAffinity
 	// 模型缓存
 	cachedModels       []ModelInfo
 	modelsCacheMu      sync.RWMutex
@@ -296,6 +298,7 @@ func NewHandler() *Handler {
 		stopStatsSaver:       make(chan struct{}),
 		stopPromptCache:      make(chan struct{}),
 		stopConfigSave:       make(chan struct{}),
+		affinity:             newAccountAffinity(),
 		promptCache:          newPromptCacheTracker(defaultPromptCacheTTL),
 		microsoftSelections:  make(map[string]*microsoftProfileSelection),
 		microsoftCanceled:    make(map[string]time.Time),
@@ -933,6 +936,7 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	if cacheProfile != nil {
 		cacheProfile.Scope = promptCacheScope(&req, r, apiKeyID)
 	}
+	ctx := withAccountAffinityKey(r.Context(), accountAffinityKey(&req, r, apiKeyID))
 
 	// Pure native web_search: relay via Kiro MCP (generateAssistantResponse does not run it).
 	if hasWebSearchTool(&req) {
@@ -944,7 +948,7 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	// and returns client tool_use blocks as-is.
 	if hasWebSearchAmongTools(&req) {
 		logger.Infof("[WebSearch] Mixed tools with native web_search, entering agentic loop")
-		h.runWebSearchLoop(r.Context(), w, &req, thinking, estimatedInputTokens, apiKeyID, cacheProfile)
+		h.runWebSearchLoop(ctx, w, &req, thinking, estimatedInputTokens, apiKeyID, cacheProfile)
 		return
 	}
 
@@ -953,9 +957,9 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 
 	// Stream or non-stream
 	if req.Stream {
-		h.handleClaudeStream(r.Context(), w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID)
+		h.handleClaudeStream(ctx, w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID)
 	} else {
-		h.handleClaudeNonStream(r.Context(), w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID)
+		h.handleClaudeNonStream(ctx, w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID)
 	}
 }
 
@@ -1011,7 +1015,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		account := retryAccount
 		retryAccount = nil
 		if account == nil {
-			account = h.pool.GetNextForModelExcluding(model, excluded)
+			account = h.nextAccount(ctx, model, excluded)
 		}
 		if account == nil {
 			break
@@ -1623,7 +1627,7 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		account := retryAccount
 		retryAccount = nil
 		if account == nil {
-			account = h.pool.GetNextForModelExcluding(model, excluded)
+			account = h.nextAccount(ctx, model, excluded)
 		}
 		if account == nil {
 			break
@@ -1811,10 +1815,11 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	cacheProfile := h.openAICacheProfile(&req, estimatedInputTokens, r, apiKeyID)
+	ctx := withAccountAffinityKey(r.Context(), accountAffinityKey(nil, r, apiKeyID))
 	if req.Stream {
-		h.handleOpenAIStream(r.Context(), w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, cacheProfile)
+		h.handleOpenAIStream(ctx, w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, cacheProfile)
 	} else {
-		h.handleOpenAINonStream(r.Context(), w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, cacheProfile)
+		h.handleOpenAINonStream(ctx, w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, cacheProfile)
 	}
 }
 
@@ -1844,7 +1849,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		account := retryAccount
 		retryAccount = nil
 		if account == nil {
-			account = h.pool.GetNextForModelExcluding(model, excluded)
+			account = h.nextAccount(ctx, model, excluded)
 		}
 		if account == nil {
 			break
@@ -2265,7 +2270,7 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		account := retryAccount
 		retryAccount = nil
 		if account == nil {
-			account = h.pool.GetNextForModelExcluding(model, excluded)
+			account = h.nextAccount(ctx, model, excluded)
 		}
 		if account == nil {
 			break
@@ -4114,6 +4119,7 @@ func compatEffectiveSettings(c config.CompatConfig) map[string]interface{} {
 		"promptCacheMaxEntries":          c.PromptCacheMaxEntries,
 		"simulateAnthropicCache":         c.SimulateAnthropicCache,
 		"simulateOpenAICache":            c.SimulateOpenAICache,
+		"accountAffinity":                c.AccountAffinity,
 	}
 }
 

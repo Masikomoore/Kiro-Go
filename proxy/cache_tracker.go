@@ -172,20 +172,7 @@ func promptCacheScope(req *ClaudeRequest, r *http.Request, apiKeyID string) stri
 	if config.GetCompatConfig().PromptCacheScope == config.PromptCacheScopeAccount {
 		return ""
 	}
-	if req != nil && req.Metadata != nil {
-		if sid := claudeCodeSessionID(req.Metadata.UserID); sid != "" {
-			return "sess:" + sid
-		}
-	}
-	if r != nil {
-		if sid := strings.TrimSpace(r.Header.Get("X-Claude-Code-Session-Id")); sid != "" {
-			return "sess:" + sid
-		}
-	}
-	if strings.TrimSpace(apiKeyID) != "" {
-		return "key:" + apiKeyID
-	}
-	return ""
+	return accountAffinityKey(req, r, apiKeyID)
 }
 
 func (p *promptCacheProfile) scopeKey(accountID string) string {

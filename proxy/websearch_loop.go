@@ -151,7 +151,7 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 		account := retryAccount
 		retryAccount = nil
 		if account == nil {
-			account = h.pool.GetNextForModelExcluding(req.Model, excluded)
+			account = h.nextAccount(ctx, req.Model, excluded)
 		}
 		if account == nil {
 			break
