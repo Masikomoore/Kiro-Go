@@ -277,6 +277,15 @@ func (p *AccountPool) pick(model string, excluded map[string]bool, inOrder bool)
 // lists the model, not cooling down, token not about to expire, and not
 // blocked by quota. The caller holds p.mu.
 func (p *AccountPool) readyLocked(acc *config.Account, model string, excluded map[string]bool, now time.Time, allowOverUsage bool) bool {
+	if acc.ExpiresAt > 0 && now.Unix() > acc.ExpiresAt-tokenRefreshSkewSeconds {
+		return false
+	}
+	return p.servableLocked(acc, model, excluded, now, allowOverUsage)
+}
+
+// servableLocked is readyLocked without the token expiry check, for an account
+// the caller will refresh before use. The caller holds p.mu.
+func (p *AccountPool) servableLocked(acc *config.Account, model string, excluded map[string]bool, now time.Time, allowOverUsage bool) bool {
 	if excluded != nil && excluded[acc.ID] {
 		return false
 	}
@@ -284,9 +293,6 @@ func (p *AccountPool) readyLocked(acc *config.Account, model string, excluded ma
 		return false
 	}
 	if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
-		return false
-	}
-	if acc.ExpiresAt > 0 && now.Unix() > acc.ExpiresAt-tokenRefreshSkewSeconds {
 		return false
 	}
 	return !isQuotaBlocked(*acc, allowOverUsage)
@@ -305,7 +311,11 @@ func (p *AccountPool) GetPreferredForModelExcluding(model string, excluded map[s
 			if acc.ID != preferredID {
 				continue
 			}
-			if p.readyLocked(acc, model, excluded, time.Now(), allowOverUsage) {
+			// An expiring token does not move the conversation: the caller
+			// refreshes it before the request (ensureValidToken). Skipping it
+			// sent a conversation to a cold account whenever its token lapsed,
+			// which on CA2 turned a 94k-token warm turn into a full rewrite.
+			if p.servableLocked(acc, model, excluded, time.Now(), allowOverUsage) {
 				p.mu.RUnlock()
 				return acc
 			}

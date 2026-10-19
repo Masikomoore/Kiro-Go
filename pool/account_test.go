@@ -335,6 +335,18 @@ func TestGetPreferredForModelExcludingKeepsReadyAccount(t *testing.T) {
 	}
 }
 
+// A conversation keeps its account when only the token is about to expire; the
+// handler refreshes it before the request.
+func TestGetPreferredForModelExcludingKeepsExpiringAccount(t *testing.T) {
+	p := newTestPool(config.Account{ID: "a"}, config.Account{ID: "b", ExpiresAt: time.Now().Unix() - 10})
+	if got := p.GetPreferredForModelExcluding("m", nil, "b"); got == nil || got.ID != "b" {
+		t.Fatalf("expiring preference: expected b, got %v", got)
+	}
+	if got := p.GetPreferredForModelExcluding("m", map[string]bool{"b": true}, "b"); got == nil || got.ID != "a" {
+		t.Fatalf("a failed refresh excludes b: expected a, got %v", got)
+	}
+}
+
 func TestGetPreferredForModelExcludingFallsBack(t *testing.T) {
 	p := newTestPool(config.Account{ID: "a"}, config.Account{ID: "b"})
 	p.cooldowns["b"] = time.Now().Add(time.Minute)
