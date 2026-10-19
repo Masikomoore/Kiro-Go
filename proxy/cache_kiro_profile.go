@@ -46,6 +46,14 @@ func (t *promptCacheTracker) BuildKiroProfile(payload *KiroPayload, model string
 			IsMessageEnd: true,
 		})
 	}
+	// The tool specs ride on the current message but are part of the prelude
+	// upstream; counting them here too reported ~20k tokens of Claude Code's
+	// tools as a fresh cache write on every turn.
+	if ctx := current.UserInputMessageContext; ctx != nil && len(ctx.Tools) > 0 {
+		withoutTools := *ctx
+		withoutTools.Tools = nil
+		current.UserInputMessageContext = &withoutTools
+	}
 	currentEntry := KiroHistoryMessage{UserInputMessage: &current}
 	currentTokens := kiroEntryTokens(currentEntry)
 	if includeCurrent {

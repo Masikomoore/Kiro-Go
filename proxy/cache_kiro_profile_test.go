@@ -137,3 +137,34 @@ func TestKiroProfileSplitUsesKiroBasis(t *testing.T) {
 		t.Fatalf("an unchanged cache_control turn must be nearly all cache, got %+v", split)
 	}
 }
+
+// Tool specs are sent once, in the prelude; the current message must not count
+// them again, or every turn reports the whole tool list as a new cache write.
+func TestKiroProfileCountsToolsOnce(t *testing.T) {
+	useCompat(t, config.CompatSettings{})
+	tracker := newPromptCacheTracker(time.Hour)
+	build := func(withTools bool) *KiroPayload {
+		req := &ClaudeRequest{Model: "claude-sonnet-4.5", System: strings.Repeat("You are a helpful assistant. ", 100), Messages: []ClaudeMessage{
+			{Role: "user", Content: "question 0: " + strings.Repeat("explain the module. ", 120)},
+			{Role: "assistant", Content: "answer 0: " + strings.Repeat("it handles requests. ", 120)},
+			{Role: "user", Content: "question 1"},
+		}}
+		if withTools {
+			for i := 0; i < 20; i++ {
+				req.Tools = append(req.Tools, ClaudeTool{Name: fmt.Sprintf("tool_%d", i), Description: strings.Repeat("does a thing. ", 60),
+					InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"path": map[string]interface{}{"type": "string"}}}})
+			}
+		}
+		return ClaudeToKiro(req, false)
+	}
+	withTools := build(true)
+	toolTokens := estimateJSONTokens(withTools.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools)
+	last := func(p *promptCacheProfile) int { return p.Breakpoints[len(p.Breakpoints)-1].CumulativeTokens }
+	diff := last(tracker.BuildKiroProfile(withTools, "claude-sonnet-4.5", true)) - last(tracker.BuildKiroProfile(build(false), "claude-sonnet-4.5", true))
+	if diff != toolTokens {
+		t.Fatalf("tools must be counted once (%d tokens), the profile grew by %d", toolTokens, diff)
+	}
+	if withTools.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools == nil {
+		t.Fatal("BuildKiroProfile must not modify the payload")
+	}
+}
