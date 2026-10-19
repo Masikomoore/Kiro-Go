@@ -26,9 +26,12 @@ const maxWebSearchRounds = 5
 
 // webSearchRoundOutcome is one buffered generateAssistantResponse round.
 type webSearchRoundOutcome struct {
-	text               string
-	toolUses           []KiroToolUse
-	inputTokens        int
+	text        string
+	toolUses    []KiroToolUse
+	inputTokens int
+	// outputTokens is what the model generated this round, thinking
+	// included: Kiro bills it whether or not the text reaches the client.
+	outputTokens       int
 	credits            float64
 	stopReasonOverride string
 }
@@ -42,6 +45,7 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 	presentation := make([]map[string]interface{}, 0)
 	var lastAccountID string
 	var totalCredits float64
+	totalOutput := 0
 	reqStart := time.Now()
 	fallbackInput := estimatedInputTokens
 	// Respect native max_uses (capped by maxWebSearchRounds).
@@ -71,6 +75,7 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 			lastAccountID = account.ID
 		}
 		totalCredits += round.credits
+		totalOutput += round.outputTokens
 
 		// Continue only when every tool_use is web_search, budget remains, and
 		// this round's searches fit under max_uses.
@@ -113,7 +118,9 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 
 		content := buildFlushContent(presentation, round.text, round.toolUses, searched)
 		stopReason := resolveFlushStopReason(round.stopReasonOverride, round.toolUses, content)
-		outputTokens := estimateContentBlocksTokens(content)
+		// Output is what the model generated over all rounds. Search results
+		// are not model output; the last round's input already counts them.
+		outputTokens := maxInt(totalOutput, 1)
 		inputTokens := round.inputTokens
 		if inputTokens <= 0 {
 			inputTokens = fallbackInput
@@ -163,7 +170,7 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 			continue
 		}
 
-		var text string
+		var text, thinkingText string
 		var toolUses []KiroToolUse
 		var inputTokens int
 		var credits float64
@@ -173,6 +180,7 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 		callback := &KiroStreamCallback{
 			OnText: func(t string, isThinking bool) {
 				if isThinking {
+					thinkingText += t
 					return
 				}
 				text += t
@@ -225,10 +233,14 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 			inputTokens = estimatedInputTokens
 		}
 
+		if !thinking {
+			thinkingText = ""
+		}
 		return &webSearchRoundOutcome{
 			text:               text,
 			toolUses:           toolUses,
 			inputTokens:        inputTokens,
+			outputTokens:       estimateClaudeOutputTokens(text, thinkingText, toolUses),
 			credits:            credits,
 			stopReasonOverride: stopOverride,
 		}, account, nil
@@ -419,29 +431,6 @@ func resolveFlushStopReason(override string, toolUses []KiroToolUse, content []m
 		}
 	}
 	return "end_turn"
-}
-
-func estimateContentBlocksTokens(content []map[string]interface{}) int {
-	total := 0
-	for _, block := range content {
-		switch block["type"] {
-		case "text":
-			if t, ok := block["text"].(string); ok {
-				total += estimateApproxTokens(t)
-			}
-		case "tool_use", "server_tool_use":
-			if n, ok := block["name"].(string); ok {
-				total += estimateApproxTokens(n)
-			}
-			total += estimateJSONTokens(block["input"])
-		case "web_search_tool_result":
-			total += estimateJSONTokens(block["content"])
-		}
-	}
-	if total < 1 {
-		return 1
-	}
-	return total
 }
 
 func (h *Handler) renderWebSearchLoopJSON(

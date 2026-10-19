@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -557,5 +559,43 @@ func TestParseSearchResults_EmptyResultsArrayIsValid(t *testing.T) {
 	}
 	if len(results.Results) != 0 {
 		t.Fatalf("results len = %d", len(results.Results))
+	}
+}
+
+// Codex always sends web_search, so all of its turns take the loop. The loop
+// counted only the final content blocks as output, dropping the reasoning that
+// Kiro bills (live: 184 output tokens reported, ~3,450 implied by credits).
+func TestWebSearchLoopCountsThinkingAsOutput(t *testing.T) {
+	reasoning := strings.Repeat("Let me weigh the options carefully. ", 120)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "reasoningContentEvent", map[string]interface{}{"text": reasoning}))
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "done"}))
+		_, _ = w.Write(awsEventStreamFrame(t, "metadataEvent", map[string]interface{}{"stopReason": "end_turn"}))
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("ws-output")[:1]...)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "claude-sonnet-4.5", "max_tokens": 4000,
+		"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": 2000},
+		"tools": []interface{}{
+			map[string]interface{}{"type": "web_search_20250305", "name": "web_search"},
+			map[string]interface{}{"name": "read_file", "description": "Read a file", "input_schema": map[string]interface{}{"type": "object"}},
+		},
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "What changed?"}},
+	})
+	rec := httptest.NewRecorder()
+	h.handleClaudeMessages(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body))))
+	var resp struct {
+		Usage struct {
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, rec.Body.String())
+	}
+	if min := estimateApproxTokens(reasoning); resp.Usage.OutputTokens < min {
+		t.Fatalf("output_tokens = %d, want at least the %d reasoning tokens", resp.Usage.OutputTokens, min)
 	}
 }
