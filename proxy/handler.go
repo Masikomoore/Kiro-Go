@@ -1002,6 +1002,15 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		if messageStarted {
 			return
 		}
+		startUsage := buildClaudeUsageMap(startInputTokens, 0, messageStartUsage, cacheProfile != nil)
+		if cacheProfile != nil && cacheProfile.Implicit {
+			// Clients without cache_control mostly reach us through Sub2API's
+			// protocol converter, which bills whatever usage it has seen. A
+			// stream that fails after message_start was billed in full although
+			// Kiro charged nothing, so the usage waits for message_delta, which
+			// Sub2API merges over message_start.
+			startUsage = buildClaudeUsageMap(0, 0, promptCacheUsage{}, true)
+		}
 		sse.Send("message_start", map[string]interface{}{
 			"type": "message_start",
 			"message": map[string]interface{}{
@@ -1012,7 +1021,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 				"model":         model,
 				"stop_reason":   nil,
 				"stop_sequence": nil,
-				"usage":         buildClaudeUsageMap(startInputTokens, 0, messageStartUsage, cacheProfile != nil),
+				"usage":         startUsage,
 			},
 		})
 		messageStarted = true

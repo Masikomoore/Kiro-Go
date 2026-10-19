@@ -168,3 +168,69 @@ func TestKiroProfileCountsToolsOnce(t *testing.T) {
 		t.Fatal("BuildKiroProfile must not modify the payload")
 	}
 }
+
+// Without cache_control the stream reports usage only in message_delta, so a
+// stream that fails after message_start is not billed downstream. Requests
+// with cache_control (Claude Code) keep their usage in message_start.
+func TestStreamUsageWaitsForMessageDeltaWithoutCacheControl(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeKiroSuccess(t, w, "ok")
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("defer-usage")...)
+
+	usage := func(cacheControl bool) (start, delta map[string]interface{}) {
+		last := map[string]interface{}{"type": "text", "text": "question 1"}
+		if cacheControl {
+			last["cache_control"] = map[string]interface{}{"type": "ephemeral"}
+		}
+		body, _ := json.Marshal(map[string]interface{}{
+			"model": "claude-sonnet-4.5", "max_tokens": 100, "stream": true,
+			"system": strings.Repeat("You are WorkBuddy, a desktop assistant. ", 150),
+			"messages": []interface{}{
+				map[string]interface{}{"role": "user", "content": "question 0: " + strings.Repeat("explain the module. ", 120)},
+				map[string]interface{}{"role": "assistant", "content": "answer 0: " + strings.Repeat("it handles requests. ", 120)},
+				map[string]interface{}{"role": "user", "content": []interface{}{last}},
+			},
+		})
+		rec := httptest.NewRecorder()
+		h.handleClaudeMessages(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body))))
+		for _, line := range strings.Split(rec.Body.String(), "\n") {
+			var ev struct {
+				Type    string                 `json:"type"`
+				Usage   map[string]interface{} `json:"usage"`
+				Message struct {
+					Usage map[string]interface{} `json:"usage"`
+				} `json:"message"`
+			}
+			if !strings.HasPrefix(line, "data: ") || json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev) != nil {
+				continue
+			}
+			switch ev.Type {
+			case "message_start":
+				start = ev.Message.Usage
+			case "message_delta":
+				delta = ev.Usage
+			}
+		}
+		return start, delta
+	}
+	billable := func(u map[string]interface{}) float64 {
+		n, _ := u["input_tokens"].(float64)
+		c, _ := u["cache_creation_input_tokens"].(float64)
+		r, _ := u["cache_read_input_tokens"].(float64)
+		return n + c + r
+	}
+
+	start, delta := usage(false)
+	if billable(start) != 0 {
+		t.Fatalf("message_start must carry no billable usage without cache_control, got %v", start)
+	}
+	if billable(delta) == 0 {
+		t.Fatalf("message_delta must carry the full usage, got %v", delta)
+	}
+	start, delta = usage(true)
+	if billable(start) == 0 || billable(start) != billable(delta) {
+		t.Fatalf("cache_control clients keep usage in message_start: start %v delta %v", start, delta)
+	}
+}

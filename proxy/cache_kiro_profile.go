@@ -78,6 +78,7 @@ func (t *promptCacheTracker) BuildKiroProfile(payload *KiroPayload, model string
 	profile := t.profileFromBlocks(model, kiroTotal, blocks, false)
 	if profile != nil {
 		profile.Kiro = true
+		profile.Implicit = !includeCurrent
 	}
 	return profile
 }
