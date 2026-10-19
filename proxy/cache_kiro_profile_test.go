@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -232,5 +233,91 @@ func TestStreamUsageWaitsForMessageDeltaWithoutCacheControl(t *testing.T) {
 	start, delta = usage(true)
 	if billable(start) == 0 || billable(start) != billable(delta) {
 		t.Fatalf("cache_control clients keep usage in message_start: start %v delta %v", start, delta)
+	}
+}
+
+// A client retry that overlaps the first request must read the prefix as soon
+// as the first response has begun, as Kiro's own cache does (live 2026-10-19:
+// the retry cost 1.04 credits against 2.38 but was reported as a full write).
+func TestOverlappingRequestReadsPrefixOnceFirstResponseBegins(t *testing.T) {
+	first := make(chan struct{})
+	release := make(chan struct{})
+	calls := 0
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n > 1 {
+			writeKiroSuccess(t, w, "ok")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "partial"}))
+		w.(http.Flusher).Flush()
+		close(first)
+		<-release
+		_, _ = w.Write(awsEventStreamFrame(t, "metadataEvent", map[string]interface{}{"stopReason": "end_turn"}))
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("overlap")[:1]...)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "claude-sonnet-4.5", "max_tokens": 100, "stream": true,
+		"system": strings.Repeat("You are WorkBuddy, a desktop assistant. ", 150),
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "question 0: " + strings.Repeat("explain the module. ", 120)},
+			map[string]interface{}{"role": "assistant", "content": "answer 0: " + strings.Repeat("it handles requests. ", 120)},
+			map[string]interface{}{"role": "user", "content": "question 1"},
+		},
+	})
+	send := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.handleClaudeMessages(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body))))
+		return rec
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		send()
+	}()
+	<-first
+	// The handler reads the flushed first event shortly after the server writes it.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		h.promptCache.mu.Lock()
+		n := 0
+		for _, entries := range h.promptCache.entriesByScope {
+			n += len(entries)
+		}
+		h.promptCache.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(release)
+			<-done
+			t.Fatal("the first request's prefix was not cached while its response was streaming")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	rec := send()
+	close(release)
+	<-done
+	var read float64
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		var ev struct {
+			Type  string                 `json:"type"`
+			Usage map[string]interface{} `json:"usage"`
+		}
+		if strings.HasPrefix(line, "data: ") && json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev) == nil && ev.Type == "message_delta" {
+			read, _ = ev.Usage["cache_read_input_tokens"].(float64)
+		}
+	}
+	if read == 0 {
+		t.Fatalf("overlapping retry must read the cached prefix, got body %s", rec.Body.String())
 	}
 }

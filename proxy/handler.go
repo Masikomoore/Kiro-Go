@@ -1370,6 +1370,9 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 			},
 			OnResponseBody: func() {
 				sse.Arm()
+				// Like Anthropic, the prefix is cached once the response
+				// begins, so an overlapping request (a client retry) reads it.
+				h.promptCache.Update(account.ID, cacheProfile)
 			},
 		}
 
@@ -1691,6 +1694,11 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 			},
 			OnStopReason: func(reason string) {
 				upstreamStopReason = reason
+			},
+			OnResponseBody: func() {
+				// See handleClaudeStream: the prefix is cached once the
+				// response begins.
+				h.promptCache.Update(account.ID, cacheProfile)
 			},
 		}
 
