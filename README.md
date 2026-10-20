@@ -128,7 +128,7 @@ The `compat` section of `config.json` (also `GET`/`POST /admin/api/settings` wit
 | `thinkingSignature` | `true` | Add a placeholder signature to thinking blocks for SDK clients |
 | `toolUseXmlFilter` | `true` | Strip `<tool_use>` XML leaked into answer text |
 | `imageDedup` | `true` | Send each identical image once |
-| `lowEffortWithoutThinking` | `true` | When the client did not ask for thinking, send `effort: low` to models that take `output_config.effort`. Kiro always reasons on them (it rejects `thinking: disabled`) and bills it; low cost about 24% less in a probe. Off: send nothing, so Kiro uses its default |
+| `lowEffortWithoutThinking` | `true` | When the client did not ask for thinking, send `effort: low` to models that take `output_config.effort`. Kiro always reasons on them (it rejects `thinking: disabled`) and bills it, so this asks for the least. Small probes showed no clear saving yet. Off: send nothing, so Kiro uses its default |
 | `schedulingMode` | `sticky` | Account choice per request. `sticky`: a conversation (Claude Code session, else API key) keeps its account so Kiro's per-account prompt cache hits; it moves on cooldown or failure, and new conversations rotate. `round_robin`: every request moves to the next account. `priority`: always the first ready account (kiro-RS default). Every mode serves the smallest account `priority` tier first. Also in Settings → Account scheduling |
 | `accountThrottleCooldownMinutes` | `10` | Cooldown after a 429 "suspicious activity" response for that account |
 | `structuredToolHistory` | `false` | Experimental: keep tool calls structured in history with placeholder tool specs |

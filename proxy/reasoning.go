@@ -101,8 +101,8 @@ func selectReasoningEffort(supported []string, explicit string, thinkingCfg *Cla
 // that takes output_config.effort, or nil when the model uses prompt tags
 // instead or the feature is turned off. A request that did not ask for
 // reasoning gets effort=low (compat.lowEffortWithoutThinking): Kiro accepts no
-// way to turn thinking off and bills it, and low cost about a quarter less in
-// a CA2 probe. With that switch off it gets nil, so Kiro picks its default.
+// way to turn thinking off and bills it, so ask for the least. With that
+// switch off it gets nil, so Kiro picks its default.
 func buildNativeReasoningFields(modelID string, thinking bool, thinkingCfg *ClaudeThinkingConfig, explicitEffort string) map[string]interface{} {
 	compat := config.GetCompatConfig()
 	if !compat.NativeReasoningEffort {
