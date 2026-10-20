@@ -564,7 +564,8 @@ func TestParseSearchResults_EmptyResultsArrayIsValid(t *testing.T) {
 	}
 }
 
-// Codex always sends web_search, so all of its turns take the loop. The loop
+// Some third-party clients send web_search on every turn, so all of their
+// turns take the loop. The loop
 // counted only the final content blocks as output, dropping the reasoning that
 // Kiro bills (live: 184 output tokens reported, ~3,450 implied by credits).
 func TestWebSearchLoopCountsThinkingAsOutput(t *testing.T) {
@@ -687,8 +688,8 @@ func TestReasoningProbeHeaderReplacesModelRequestFields(t *testing.T) {
 	}
 }
 
-// Codex always sends web_search, so every Codex turn takes the loop. Via
-// Sub2API there is no session or API key, so the loop must key affinity by the
+// Third-party clients that send web_search on every turn take the loop each
+// turn. Via Sub2API there is no session or API key, so the loop must key affinity by the
 // conversation like the plain path; otherwise each turn rotates accounts and
 // misses Kiro's per-account cache (live: conv f4392c26 moved accounts).
 func TestWebSearchLoopKeepsConversationOnOneAccount(t *testing.T) {
