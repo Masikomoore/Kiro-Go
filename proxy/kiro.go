@@ -527,6 +527,9 @@ endpointLoop:
 
 		baseFields := payload.AdditionalModelRequestFields
 		payload.AdditionalModelRequestFields = additionalFieldsForEndpoint(baseFields, isCLI)
+		if probe := reasoningProbeFields(ctx); probe != nil {
+			payload.AdditionalModelRequestFields = probe
+		}
 		reqBody, err := json.Marshal(payload)
 		payload.AdditionalModelRequestFields = baseFields
 		if err != nil {
@@ -1357,5 +1360,35 @@ func cachePointProbeRequested(ctx context.Context) bool {
 		return false
 	}
 	v, _ := ctx.Value(cachePointProbeCtxKey{}).(bool)
+	return v
+}
+
+type reasoningProbeCtxKey struct{}
+
+// withReasoningProbe keeps the JSON object a request sent in
+// "X-Kiro-Go-Reasoning". It replaces that request's additionalModelRequestFields
+// verbatim, to test which fields stop Kiro from reasoning when the client did
+// not ask for thinking.
+func withReasoningProbe(ctx context.Context, r *http.Request) context.Context {
+	if r == nil {
+		return ctx
+	}
+	raw := strings.TrimSpace(r.Header.Get("X-Kiro-Go-Reasoning"))
+	if raw == "" || len(raw) > 1024 {
+		return ctx
+	}
+	var fields map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil || len(fields) == 0 {
+		return ctx
+	}
+	logger.Infof("[ReasoningProbe] additionalModelRequestFields=%s", raw)
+	return context.WithValue(ctx, reasoningProbeCtxKey{}, fields)
+}
+
+func reasoningProbeFields(ctx context.Context) map[string]interface{} {
+	if ctx == nil {
+		return nil
+	}
+	v, _ := ctx.Value(reasoningProbeCtxKey{}).(map[string]interface{})
 	return v
 }

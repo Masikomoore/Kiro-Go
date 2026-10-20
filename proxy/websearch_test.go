@@ -653,3 +653,36 @@ func TestHiddenReasoningCountsAsOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestReasoningProbeHeaderReplacesModelRequestFields(t *testing.T) {
+	var got map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Fields map[string]interface{} `json:"additionalModelRequestFields"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got = body.Fields
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "done"}))
+		_, _ = w.Write(awsEventStreamFrame(t, "metadataEvent", map[string]interface{}{"stopReason": "end_turn"}))
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("reasoning-probe")[:1]...)
+
+	send := func(header string) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+			`{"model":"claude-sonnet-4.5","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`))
+		if header != "" {
+			req.Header.Set("X-Kiro-Go-Reasoning", header)
+		}
+		h.handleClaudeMessages(httptest.NewRecorder(), req)
+	}
+	send(`{"thinking":{"type":"disabled"}}`)
+	if th, _ := got["thinking"].(map[string]interface{}); th["type"] != "disabled" {
+		t.Fatalf("probe fields not sent verbatim, got %v", got)
+	}
+	send("not json")
+	if got != nil {
+		t.Fatalf("an invalid probe header must be ignored, got %v", got)
+	}
+}
