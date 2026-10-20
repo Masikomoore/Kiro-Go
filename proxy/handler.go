@@ -2634,6 +2634,10 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiGetProxy(w, r)
 	case path == "/proxy" && r.Method == "POST":
 		h.apiUpdateProxy(w, r)
+	case path == "/proxy/saved" && r.Method == "POST":
+		h.apiUpdateSavedProxies(w, r)
+	case path == "/proxy/test" && r.Method == "POST":
+		h.apiTestProxy(w, r)
 	case path == "/prompt-filter" && r.Method == "GET":
 		h.apiGetPromptFilter(w, r)
 	case path == "/prompt-filter" && r.Method == "POST":
@@ -4690,8 +4694,9 @@ func applyProxyConfig(proxyURL string) {
 
 // apiGetProxy 获取当前代理配置
 func (h *Handler) apiGetProxy(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(map[string]string{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"proxyURL": config.GetProxyURL(),
+		"proxies":  config.GetSavedProxies(),
 	})
 }
 
@@ -4707,15 +4712,10 @@ func (h *Handler) apiUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 验证代理 URL 格式（非空时）
-	if req.ProxyURL != "" {
-		if !strings.HasPrefix(req.ProxyURL, "http://") &&
-			!strings.HasPrefix(req.ProxyURL, "https://") &&
-			!strings.HasPrefix(req.ProxyURL, "socks5://") &&
-			!strings.HasPrefix(req.ProxyURL, "socks5h://") {
-			w.WriteHeader(400)
-			json.NewEncoder(w).Encode(map[string]string{"error": "proxyURL must start with http://, https://, socks5://, or socks5h://"})
-			return
-		}
+	if err := validateProxyURL(req.ProxyURL); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
 	}
 
 	if err := config.UpdateProxySettings(req.ProxyURL); err != nil {
@@ -4728,6 +4728,65 @@ func (h *Handler) apiUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	applyProxyConfig(req.ProxyURL)
 
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+// apiUpdateSavedProxies 替换已保存的代理列表（不改变当前使用的代理）
+func (h *Handler) apiUpdateSavedProxies(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Proxies []config.SavedProxy `json:"proxies"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	names := make(map[string]bool, len(req.Proxies))
+	for i := range req.Proxies {
+		p := &req.Proxies[i]
+		p.Name = strings.TrimSpace(p.Name)
+		p.URL = strings.TrimSpace(p.URL)
+		if p.Name == "" || p.URL == "" {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "each proxy needs a name and a URL"})
+			return
+		}
+		if names[p.Name] {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "duplicate proxy name: " + p.Name})
+			return
+		}
+		names[p.Name] = true
+		if err := validateProxyURL(p.URL); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": p.Name + ": " + err.Error()})
+			return
+		}
+	}
+	if err := config.UpdateSavedProxies(req.Proxies); err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+// apiTestProxy 通过指定代理请求一次 Kiro，检查连通性；proxyURL 为空时测试直连
+func (h *Handler) apiTestProxy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProxyURL string `json:"proxyURL"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	req.ProxyURL = strings.TrimSpace(req.ProxyURL)
+	if err := validateProxyURL(req.ProxyURL); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(checkProxy(r.Context(), req.ProxyURL, proxyCheckTarget))
 }
 
 // apiGetVersion 获取版本信息

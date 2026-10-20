@@ -371,33 +371,54 @@
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="settings.proxySettings"></span></div>
           <div class="form-group">
+            <label data-i18n="settings.proxyActive"></label>
+            <div class="input-row">
+              <select id="proxyActiveSelect"></select>
+              <button class="btn btn-outline" id="testActiveProxyBtn" type="button" data-i18n="settings.proxyTest"></button>
+              <button class="btn btn-primary" id="applyProxyBtn" type="button" data-i18n="settings.proxyApply"></button>
+            </div>
+            <small id="activeProxyResult"></small>
+            <small data-i18n="settings.proxyActiveHint"></small>
+          </div>
+          <div class="form-group">
+            <label data-i18n="settings.proxyList"></label>
+            <div id="savedProxyList"></div>
+          </div>
+          <div class="form-group">
+            <label id="proxyFormTitle" data-i18n="settings.proxyAdd"></label>
+            <input type="text" id="proxyName" data-i18n-placeholder="settings.proxyName" />
+          </div>
+          <div class="form-group">
             <label data-i18n="settings.proxyType"></label>
             <select id="proxyType">
-              <option value="none" data-i18n="settings.proxyNone"></option>
               <option value="socks5" data-i18n="settings.proxySocks5"></option>
               <option value="http" data-i18n="settings.proxyHttp"></option>
             </select>
           </div>
-          <div id="proxyFields" class="hidden">
-            <div class="form-group">
-              <label data-i18n="settings.proxyHost"></label>
-              <div class="input-row">
-                <input type="text" id="proxyHost" placeholder="127.0.0.1" />
-                <input type="number" id="proxyPort" class="w-24!" placeholder="1080" min="1" max="65535" />
-              </div>
-            </div>
-            <div class="form-group">
-              <label data-i18n="settings.proxyAuth"></label>
-              <div class="input-row">
-                <input type="text" id="proxyUsername" data-i18n-placeholder="settings.proxyUsername"
-                  autocomplete="off" />
-                <input type="password" id="proxyPassword" data-i18n-placeholder="settings.proxyPassword"
-                  autocomplete="new-password" />
-              </div>
+          <div class="form-group">
+            <label data-i18n="settings.proxyHost"></label>
+            <div class="input-row">
+              <input type="text" id="proxyHost" placeholder="127.0.0.1" />
+              <input type="number" id="proxyPort" class="w-24!" placeholder="1080" min="1" max="65535" />
             </div>
           </div>
-          <button class="btn btn-primary" id="saveProxyBtn" data-i18n="settings.saveProxy"></button>
+          <div class="form-group">
+            <label data-i18n="settings.proxyAuth"></label>
+            <div class="input-row">
+              <input type="text" id="proxyUsername" data-i18n-placeholder="settings.proxyUsername"
+                autocomplete="off" />
+              <input type="password" id="proxyPassword" data-i18n-placeholder="settings.proxyPassword"
+                autocomplete="new-password" />
+            </div>
+            <small id="proxyFormResult"></small>
+          </div>
+          <div class="input-row">
+            <button class="btn btn-outline" id="testProxyFormBtn" type="button" data-i18n="settings.proxyTest"></button>
+            <button class="btn btn-primary" id="saveProxyBtn" type="button" data-i18n="settings.saveProxy"></button>
+            <button class="btn btn-secondary" id="resetProxyFormBtn" type="button" data-i18n="settings.proxyFormReset"></button>
+          </div>
         </div>
+        <datalist id="savedProxyOptions"></datalist>
 
         <!-- Prompt filter -->
         <div class="card">

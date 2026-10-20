@@ -153,7 +153,11 @@ OpenAI `/v1/chat/completions` and `/v1/responses` report no cache fields. The sw
 
 For users in restricted network regions, configure an outbound proxy in the admin panel under **Settings - Outbound Proxy Settings**. Supports SOCKS5 and HTTP proxies.
 
-The setting takes effect immediately without restarting.
+You can save several proxies by name and pick one as the global proxy. Accounts without their own proxy use the global one. An account's own proxy can be picked from the saved list in its detail panel.
+
+**Test** sends one request to the Kiro host (`q.us-east-1.amazonaws.com`) through the proxy and shows the latency. Any HTTP status counts as connected. Testing an empty field checks the direct route.
+
+The global proxy takes effect immediately without restarting.
 
 ## Environment Variables
 

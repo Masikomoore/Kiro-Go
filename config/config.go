@@ -213,6 +213,10 @@ type Config struct {
 	// Leave empty to connect directly.
 	ProxyURL string `json:"proxyURL,omitempty"`
 
+	// Proxies are saved outbound proxies the admin can pick from for the global
+	// proxy or an account. Saving one does not route any traffic through it.
+	Proxies []SavedProxy `json:"proxies,omitempty"`
+
 	// SanitizeClaudeCodePrompt is kept for backward-compatible JSON loading only.
 	// Migrated to FilterClaudeCode on first load. Do not use directly.
 	SanitizeClaudeCodePrompt bool `json:"sanitizeClaudeCodePrompt,omitempty"`
@@ -1217,6 +1221,27 @@ func UpdateProxySettings(proxyURL string) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.ProxyURL = proxyURL
+	return Save()
+}
+
+// SavedProxy is a named outbound proxy kept for reuse.
+type SavedProxy struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// GetSavedProxies returns a copy of the saved proxy list.
+func GetSavedProxies() []SavedProxy {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	return append([]SavedProxy{}, cfg.Proxies...)
+}
+
+// UpdateSavedProxies replaces the saved proxy list.
+func UpdateSavedProxies(proxies []SavedProxy) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.Proxies = append([]SavedProxy{}, proxies...)
 	return Save()
 }
 

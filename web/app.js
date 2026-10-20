@@ -1272,9 +1272,10 @@
       '</div>' +
 
       '<div class="detail-section"><h4>' + escapeHtml(t('detail.proxyURL')) + '</h4><div class="machine-id-row">' +
-      '<input type="text" id="proxyURLInput" value="' + escapeAttr(a.proxyURL || '') + '" placeholder="socks5://host:port" />' +
+      '<input type="text" id="proxyURLInput" list="savedProxyOptions" value="' + escapeAttr(a.proxyURL || '') + '" placeholder="socks5://host:port" />' +
+      '<button class="btn btn-sm btn-outline" data-detail-action="testProxyURL" data-id="' + idAttr + '" type="button">' + escapeHtml(t('settings.proxyTest')) + '</button>' +
       '<button class="btn btn-sm btn-primary" data-detail-action="saveProxyURL" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.save')) + '</button>' +
-      '</div><p class="help-block">' + escapeHtml(t('detail.proxyHint')) + '</p></div>' +
+      '</div><p class="help-block" id="proxyURLResult"></p><p class="help-block">' + escapeHtml(t('detail.proxyHint')) + '</p></div>' +
 
       '<div class="detail-section"><h4>' + escapeHtml(t('detail.subscription')) + '</h4><div class="detail-grid">' +
       detailItem(t('detail.subscriptionType'), a.subscriptionTitle || (a.subscriptionType ? formatSubscriptionLabel(a.subscriptionType) : '-')) +
@@ -1453,6 +1454,14 @@
       toast(t('detail.proxyFormatError'), 'warning'); return;
     }
     await putAccount(id, { proxyURL: url }, t('detail.proxySaved'));
+  }
+  function testAccountProxyURL() {
+    const url = $('proxyURLInput').value.trim();
+    if (url && !/^(socks5|socks5h|http|https):\/\//.test(url)) {
+      toast(t('detail.proxyFormatError'), 'warning'); return;
+    }
+    // An empty field means the account uses the global proxy.
+    testProxy(url || activeProxyURL, $('proxyURLResult'));
   }
   function closeDetailModal() { closeDialog('detailModal'); }
 
@@ -1642,49 +1651,150 @@
     if (d.success) toast(t('settings.endpointSaved'), 'success');
     else toast(t('common.saveFailed') + ': ' + (d.error || ''), 'error');
   }
+  let activeProxyURL = '';
+  let savedProxies = [];
+  let proxyEditingName = '';
+  const proxyTestResults = {};
   async function loadProxyConfig() {
     const res = await api('/proxy');
     const d = await res.json();
-    const url = d.proxyURL || '';
-    if (!url) {
-      $('proxyType').value = 'none';
-      $('proxyFields').classList.add('hidden');
-      return;
-    }
+    activeProxyURL = d.proxyURL || '';
+    savedProxies = Array.isArray(d.proxies) ? d.proxies : [];
+    renderProxySettings();
+    // A global proxy saved before the list existed: offer it in the form so it can be named and saved.
+    if (activeProxyURL && !savedProxies.some(p => p.url === activeProxyURL)) fillProxyForm({ name: '', url: activeProxyURL });
+  }
+  function maskProxyURL(url) {
     try {
       const u = new URL(url);
-      const scheme = u.protocol.replace(':', '');
-      $('proxyType').value = scheme.startsWith('socks5') ? 'socks5' : 'http';
+      if (u.password) u.password = '***';
+      return decodeURIComponent(u.toString()).replace(/\/$/, '');
+    } catch (e) { return url; }
+  }
+  function renderProxySettings() {
+    const sel = $('proxyActiveSelect');
+    let opts = '<option value="">' + escapeHtml(t('settings.proxyNone')) + '</option>';
+    opts += savedProxies.map(p => '<option value="' + escapeAttr(p.url) + '">' + escapeHtml(p.name + ' — ' + maskProxyURL(p.url)) + '</option>').join('');
+    if (activeProxyURL && !savedProxies.some(p => p.url === activeProxyURL)) {
+      opts += '<option value="' + escapeAttr(activeProxyURL) + '">' + escapeHtml(t('settings.proxyUnsaved') + ' — ' + maskProxyURL(activeProxyURL)) + '</option>';
+    }
+    sel.innerHTML = opts;
+    sel.value = activeProxyURL;
+
+    const list = $('savedProxyList');
+    if (!savedProxies.length) {
+      list.innerHTML = '<div class="muted-text" style="padding:0.25rem 0;">' + escapeHtml(t('settings.proxyListEmpty')) + '</div>';
+    } else {
+      list.innerHTML = savedProxies.map((p, i) => {
+        const active = p.url === activeProxyURL ? ' <span class="badge badge-success">' + escapeHtml(t('settings.proxyInUse')) + '</span>' : '';
+        return '<div class="flex items-center gap-2" style="flex-wrap:wrap;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid rgba(127,127,127,0.2);">' +
+          '<div class="flex items-center gap-2" style="flex-wrap:wrap;">' +
+            '<span class="font-semibold">' + escapeHtml(p.name) + '</span>' + active +
+            '<span class="text-xs muted-text font-mono">' + escapeHtml(maskProxyURL(p.url)) + '</span>' +
+            '<span class="text-xs" id="proxyResult-' + i + '">' + (proxyTestResults[p.url] || '') + '</span>' +
+          '</div>' +
+          '<div class="flex items-center gap-2">' +
+            '<button class="btn btn-outline btn-sm" type="button" data-proxy-action="test" data-index="' + i + '">' + escapeHtml(t('settings.proxyTest')) + '</button>' +
+            '<button class="btn btn-outline btn-sm" type="button" data-proxy-action="edit" data-index="' + i + '">' + escapeHtml(t('apiKeys.actionEdit')) + '</button>' +
+            '<button class="btn btn-danger btn-sm" type="button" data-proxy-action="delete" data-index="' + i + '">' + escapeHtml(t('apiKeys.actionDelete')) + '</button>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+    $('savedProxyOptions').innerHTML = savedProxies.map(p => '<option value="' + escapeAttr(p.url) + '">' + escapeHtml(p.name) + '</option>').join('');
+  }
+  function fillProxyForm(p) {
+    proxyEditingName = p && p.name ? p.name : '';
+    $('proxyFormTitle').textContent = t(proxyEditingName ? 'settings.proxyEdit' : 'settings.proxyAdd');
+    $('proxyName').value = proxyEditingName;
+    $('proxyType').value = 'socks5';
+    ['proxyHost', 'proxyPort', 'proxyUsername', 'proxyPassword'].forEach(id => { $(id).value = ''; });
+    $('proxyFormResult').innerHTML = '';
+    if (!p || !p.url) return;
+    try {
+      const u = new URL(p.url);
+      $('proxyType').value = u.protocol.startsWith('socks5') ? 'socks5' : 'http';
       $('proxyHost').value = u.hostname;
       $('proxyPort').value = u.port;
       $('proxyUsername').value = decodeURIComponent(u.username);
       $('proxyPassword').value = decodeURIComponent(u.password);
-      $('proxyFields').classList.remove('hidden');
+    } catch (e) { /* leave the form blank */ }
+  }
+  function proxyFormURL() {
+    const host = $('proxyHost').value.trim();
+    const port = $('proxyPort').value.trim();
+    if (!host || !port) { toast(t('settings.proxyHostRequired'), 'warning'); return null; }
+    const u = $('proxyUsername').value.trim();
+    const p = $('proxyPassword').value.trim();
+    const auth = u ? (p ? encodeURIComponent(u) + ':' + encodeURIComponent(p) + '@' : encodeURIComponent(u) + '@') : '';
+    return $('proxyType').value + '://' + auth + host + ':' + port;
+  }
+  async function testProxy(url, el) {
+    if (el) el.innerHTML = '<span class="muted-text">' + escapeHtml(t('settings.proxyTesting')) + '</span>';
+    let r;
+    try {
+      const res = await api('/proxy/test', { method: 'POST', body: JSON.stringify({ proxyURL: url }) });
+      r = await res.json();
     } catch (e) {
-      $('proxyType').value = 'none';
-      $('proxyFields').classList.add('hidden');
+      r = { ok: false, error: e.message || String(e) };
     }
+    const text = r.ok
+      ? t('settings.proxyTestOk', r.latencyMs, r.status)
+      : t('settings.proxyTestFailed', r.error || '');
+    if (el) el.innerHTML = '<span style="color:' + (r.ok ? '#16a34a' : '#ef4444') + ';">' + escapeHtml(text) + '</span>';
+    else toast(text, r.ok ? 'success' : 'error');
+    return r;
   }
-  function onProxyTypeChange() {
-    const type = $('proxyType').value;
-    $('proxyFields').classList.toggle('hidden', type === 'none');
+  async function putSavedProxies(list, okMsg) {
+    const res = await api('/proxy/saved', { method: 'POST', body: JSON.stringify({ proxies: list }) });
+    const d = await res.json();
+    if (!d.success) { toast(t('common.saveFailed') + ': ' + (d.error || ''), 'error'); return false; }
+    savedProxies = list;
+    renderProxySettings();
+    if (okMsg) toast(okMsg, 'success');
+    return true;
   }
-  async function saveProxyConfig() {
-    const type = $('proxyType').value;
-    let url = '';
-    if (type !== 'none') {
-      const host = $('proxyHost').value.trim();
-      const port = $('proxyPort').value.trim();
-      if (!host || !port) { toast(t('settings.proxyHostRequired'), 'warning'); return; }
-      const u = $('proxyUsername').value.trim();
-      const p = $('proxyPassword').value.trim();
-      const auth = u ? (p ? encodeURIComponent(u) + ':' + encodeURIComponent(p) + '@' : encodeURIComponent(u) + '@') : '';
-      url = type + '://' + auth + host + ':' + port;
-    }
+  async function setActiveProxy(url) {
     const res = await api('/proxy', { method: 'POST', body: JSON.stringify({ proxyURL: url }) });
     const d = await res.json();
-    if (d.success) toast(t('settings.proxySaved'), 'success');
-    else toast(t('common.saveFailed') + ': ' + (d.error || ''), 'error');
+    if (!d.success) { toast(t('common.saveFailed') + ': ' + (d.error || ''), 'error'); return false; }
+    activeProxyURL = url;
+    renderProxySettings();
+    return true;
+  }
+  async function saveProxyConfig() {
+    const url = proxyFormURL();
+    if (!url) return;
+    const name = $('proxyName').value.trim() || ($('proxyHost').value.trim() + ':' + $('proxyPort').value.trim());
+    if (savedProxies.some(p => p.name === name && p.name !== proxyEditingName)) {
+      toast(t('settings.proxyNameTaken', name), 'warning'); return;
+    }
+    const old = savedProxies.find(p => p.name === proxyEditingName);
+    const list = savedProxies.map(p => p.name === proxyEditingName ? { name, url } : p);
+    if (!old) list.push({ name, url });
+    if (!(await putSavedProxies(list, t('settings.proxySaved')))) return;
+    // Editing the proxy in use as global changes the global proxy too.
+    if (old && old.url === activeProxyURL && url !== activeProxyURL) await setActiveProxy(url);
+    fillProxyForm(null);
+  }
+  async function applyActiveProxy() {
+    if (await setActiveProxy($('proxyActiveSelect').value)) toast(t('settings.proxyApplied'), 'success');
+  }
+  async function onSavedProxyAction(action, index) {
+    const p = savedProxies[index];
+    if (!p) return;
+    if (action === 'test') {
+      const el = $('proxyResult-' + index);
+      await testProxy(p.url, el);
+      proxyTestResults[p.url] = el.innerHTML;
+    }
+    else if (action === 'edit') fillProxyForm(p);
+    else if (action === 'delete') {
+      if (p.url === activeProxyURL) { toast(t('settings.proxyDeleteInUse'), 'warning'); return; }
+      if (!confirm(t('settings.proxyDeleteConfirm', p.name))) return;
+      await putSavedProxies(savedProxies.filter((_, i) => i !== index), t('settings.proxyDeleted'));
+      if (proxyEditingName === p.name) fillProxyForm(null);
+    }
   }
   async function saveRequireApiKey() {
     try {
@@ -3283,8 +3393,15 @@
     $('saveThinkingBtn').addEventListener('click', saveThinkingConfig);
     $('saveEndpointBtn').addEventListener('click', saveEndpointConfig);
     $('changePasswordBtn').addEventListener('click', changePassword);
-    $('proxyType').addEventListener('change', onProxyTypeChange);
     $('saveProxyBtn').addEventListener('click', saveProxyConfig);
+    $('applyProxyBtn').addEventListener('click', applyActiveProxy);
+    $('testActiveProxyBtn').addEventListener('click', () => testProxy($('proxyActiveSelect').value, $('activeProxyResult')));
+    $('testProxyFormBtn').addEventListener('click', () => { const url = proxyFormURL(); if (url) testProxy(url, $('proxyFormResult')); });
+    $('resetProxyFormBtn').addEventListener('click', () => fillProxyForm(null));
+    $('savedProxyList').addEventListener('click', e => {
+      const b = e.target.closest('[data-proxy-action]');
+      if (b) onSavedProxyAction(b.dataset.proxyAction, Number(b.dataset.index));
+    });
     $('resetStatsBtn').addEventListener('click', resetStats);
     bindApiKeyEvents();
   }
@@ -3354,6 +3471,7 @@
       else if (a === 'toggleOverage') toggleOverageSwitch(id, b);
       else if (a === 'refreshOverage') refreshAccountOverage(id);
       else if (a === 'saveProxyURL') saveProxyURL(id);
+      else if (a === 'testProxyURL') testAccountProxyURL();
       else if (a === 'loadModels') loadModels(id);
       else if (a === 'refreshModels') refreshAccountModels(id);
     });
