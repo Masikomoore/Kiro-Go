@@ -1450,12 +1450,11 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		}
 		outputContent, extractedReasoning := extractThinkingFromContent(rawContentBuilder.String())
 		thinkingOutput := rawThinkingBuilder.String()
-		if thinking && thinkingOutput == "" && extractedReasoning != "" {
+		if thinkingOutput == "" {
 			thinkingOutput = extractedReasoning
 		}
-		if !thinking {
-			thinkingOutput = ""
-		}
+		// Kiro bills its reasoning even when the client did not ask for thinking
+		// and never receives it, so it counts as output either way.
 		outputTokens = estimateClaudeOutputTokens(outputContent, thinkingOutput, toolUses)
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
@@ -1740,10 +1739,11 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 
 		thinkingFormat := thinkingOpts.Format
 		finalContent, extractedReasoning := extractThinkingFromContent(content)
-		rawThinkingContent := thinkingContent
-		if thinking && rawThinkingContent == "" && extractedReasoning != "" {
-			rawThinkingContent = extractedReasoning
+		billedThinking := thinkingContent
+		if billedThinking == "" {
+			billedThinking = extractedReasoning
 		}
+		rawThinkingContent := billedThinking
 		if !thinking {
 			rawThinkingContent = ""
 		}
@@ -1753,7 +1753,8 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		} else if inputTokens <= 0 {
 			inputTokens = estimatedInputTokens
 		}
-		outputTokens = estimateClaudeOutputTokens(finalContent, rawThinkingContent, toolUses)
+		// Kiro bills reasoning the client did not ask for and does not receive.
+		outputTokens = estimateClaudeOutputTokens(finalContent, billedThinking, toolUses)
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
@@ -2246,12 +2247,10 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		}
 		outputContent, extractedReasoning := extractThinkingFromContent(rawContentBuilder.String())
 		reasoningOutput := rawReasoningBuilder.String()
-		if thinking && reasoningOutput == "" && extractedReasoning != "" {
+		if reasoningOutput == "" {
 			reasoningOutput = extractedReasoning
 		}
-		if !thinking {
-			reasoningOutput = ""
-		}
+		// Kiro bills reasoning the client did not ask for and does not receive.
 		outputTokens = estimateApproxTokens(outputContent) + estimateApproxTokens(reasoningOutput)
 		for _, tc := range toolCalls {
 			outputTokens += estimateApproxTokens(tc.Function.Name)
@@ -2378,9 +2377,12 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		}
 
 		finalContent, extractedReasoning := extractThinkingFromContent(content)
-		if thinking && reasoningContent == "" && extractedReasoning != "" {
+		if reasoningContent == "" {
 			reasoningContent = extractedReasoning
-		} else if !thinking {
+		}
+		// Kiro bills reasoning the client did not ask for and does not receive.
+		outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
+		if !thinking {
 			reasoningContent = ""
 		}
 
@@ -2389,7 +2391,6 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		} else if inputTokens <= 0 {
 			inputTokens = estimatedInputTokens
 		}
-		outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)

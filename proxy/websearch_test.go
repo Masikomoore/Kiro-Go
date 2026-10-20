@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -597,5 +599,57 @@ func TestWebSearchLoopCountsThinkingAsOutput(t *testing.T) {
 	}
 	if min := estimateApproxTokens(reasoning); resp.Usage.OutputTokens < min {
 		t.Fatalf("output_tokens = %d, want at least the %d reasoning tokens", resp.Usage.OutputTokens, min)
+	}
+}
+
+// Kiro reasons and bills it even when the client did not ask for thinking
+// (live: a no-thinking SDK client billed 54% of the credit-implied output).
+// The reasoning stays out of the response but counts as output.
+func TestHiddenReasoningCountsAsOutput(t *testing.T) {
+	reasoning := strings.Repeat("Hidden chain of reasoning about the request. ", 120)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "reasoningContentEvent", map[string]interface{}{"text": reasoning}))
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "done"}))
+		_, _ = w.Write(awsEventStreamFrame(t, "metadataEvent", map[string]interface{}{"stopReason": "end_turn"}))
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("hidden-reasoning")[:1]...)
+	min := estimateApproxTokens(reasoning)
+	outputRe := regexp.MustCompile(`"(?:output_tokens|completion_tokens)":(\d+)`)
+
+	cases := []struct {
+		name   string
+		path   string
+		stream bool
+		serve  func(http.ResponseWriter, *http.Request)
+	}{
+		{"claude stream", "/v1/messages", true, h.handleClaudeMessages},
+		{"claude non-stream", "/v1/messages", false, h.handleClaudeMessages},
+		{"openai stream", "/v1/chat/completions", true, h.handleOpenAIChat},
+		{"openai non-stream", "/v1/chat/completions", false, h.handleOpenAIChat},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]interface{}{
+				"model": "claude-sonnet-4.5", "max_tokens": 4000, "stream": tc.stream,
+				"messages": []interface{}{map[string]interface{}{"role": "user", "content": "What changed?"}},
+			})
+			rec := httptest.NewRecorder()
+			tc.serve(rec, httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(string(body))))
+			out := rec.Body.String()
+			if strings.Contains(out, "Hidden chain of reasoning") {
+				t.Fatalf("reasoning leaked to a client that did not ask for thinking:\n%s", out)
+			}
+			best := 0
+			for _, m := range outputRe.FindAllStringSubmatch(out, -1) {
+				if n, _ := strconv.Atoi(m[1]); n > best {
+					best = n
+				}
+			}
+			if best < min {
+				t.Fatalf("output tokens = %d, want at least the %d reasoning tokens\n%s", best, min, out)
+			}
+		})
 	}
 }

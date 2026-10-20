@@ -233,9 +233,8 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 			inputTokens = estimatedInputTokens
 		}
 
-		if !thinking {
-			thinkingText = ""
-		}
+		// thinkingText is never sent here; it is counted because Kiro bills it,
+		// whether or not the client asked for thinking.
 		return &webSearchRoundOutcome{
 			text:               text,
 			toolUses:           toolUses,
