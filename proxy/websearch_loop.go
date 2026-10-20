@@ -149,6 +149,9 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 // callUpstreamForWebSearch converts the Claude request and buffers one Kiro stream.
 func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeRequest, thinking bool, estimatedInputTokens int) (*webSearchRoundOutcome, *config.Account, error) {
 	payload := ClaudeToKiro(req, thinking)
+	// Like the plain path: without a session or API key (Codex via Sub2API),
+	// keep the conversation on one account so Kiro's cache hits across turns.
+	ctx = withConversationAffinityFallback(ctx, payload)
 	excluded := make(map[string]bool)
 	var lastErr error
 

@@ -686,3 +686,51 @@ func TestReasoningProbeHeaderReplacesModelRequestFields(t *testing.T) {
 		t.Fatalf("an invalid probe header must be ignored, got %v", got)
 	}
 }
+
+// Codex always sends web_search, so every Codex turn takes the loop. Via
+// Sub2API there is no session or API key, so the loop must key affinity by the
+// conversation like the plain path; otherwise each turn rotates accounts and
+// misses Kiro's per-account cache (live: conv f4392c26 moved accounts).
+func TestWebSearchLoopKeepsConversationOnOneAccount(t *testing.T) {
+	var tokens []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokens = append(tokens, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "done"}))
+		_, _ = w.Write(awsEventStreamFrame(t, "metadataEvent", map[string]interface{}{"stopReason": "end_turn"}))
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("ws-affinity")...)
+	h.affinity = newAccountAffinity()
+
+	turn := func(messages []interface{}) {
+		body, _ := json.Marshal(map[string]interface{}{
+			"model": "claude-sonnet-4.5", "max_tokens": 100,
+			"tools": []interface{}{
+				map[string]interface{}{"type": "web_search_20250305", "name": "web_search"},
+				map[string]interface{}{"name": "read_file", "description": "Read a file", "input_schema": map[string]interface{}{"type": "object"}},
+			},
+			"messages": messages,
+		})
+		h.handleClaudeMessages(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body))))
+	}
+	first := map[string]interface{}{"role": "user", "content": "What changed?"}
+	turn([]interface{}{first})
+	turn([]interface{}{first,
+		map[string]interface{}{"role": "assistant", "content": "done"},
+		map[string]interface{}{"role": "user", "content": "And then?"}})
+	turn([]interface{}{first,
+		map[string]interface{}{"role": "assistant", "content": "done"},
+		map[string]interface{}{"role": "user", "content": "And then?"},
+		map[string]interface{}{"role": "assistant", "content": "done"},
+		map[string]interface{}{"role": "user", "content": "Anything else?"}})
+
+	if len(tokens) != 3 {
+		t.Fatalf("upstream calls = %d, want 3", len(tokens))
+	}
+	for i, tok := range tokens {
+		if tok != tokens[0] {
+			t.Fatalf("turn %d used %q, turn 1 used %q; a conversation must stay on one account", i+1, tok, tokens[0])
+		}
+	}
+}
