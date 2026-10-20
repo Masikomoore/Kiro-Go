@@ -20,6 +20,9 @@ type CompatSettings struct {
 	ThinkingSignature     *bool `json:"thinkingSignature,omitempty"`
 	ToolUseXMLFilter      *bool `json:"toolUseXmlFilter,omitempty"`
 	ImageDedup            *bool `json:"imageDedup,omitempty"`
+	// LowEffortWithoutThinking sends effort=low when the client did not ask
+	// for thinking. Kiro always reasons on these models and bills it.
+	LowEffortWithoutThinking *bool `json:"lowEffortWithoutThinking,omitempty"`
 	// SchedulingMode picks the upstream account per request: sticky (default)
 	// | round_robin | priority. See the Scheduling* constants.
 	SchedulingMode string `json:"schedulingMode,omitempty"`
@@ -76,23 +79,24 @@ const (
 
 // CompatConfig is CompatSettings with defaults applied.
 type CompatConfig struct {
-	AccountThrottleCooldown time.Duration
-	NativeReasoningEffort   bool
-	ToolChunkingHints       bool
-	ThinkingSignature       bool
-	ToolUseXMLFilter        bool
-	ImageDedup              bool
-	StructuredToolHistory   bool
-	NormalizeKiroToolParams bool
-	ImageDownscale          bool
-	BuilderIDPlaceholderArn string
-	PromptCacheMode         string
-	PromptCacheScope        string
-	PromptCacheMaxEntries   int
-	SimulateAnthropicCache  bool
-	SchedulingMode          string
-	ImplicitAnthropicCache  bool
-	CLIEndpointFirst        bool
+	AccountThrottleCooldown  time.Duration
+	NativeReasoningEffort    bool
+	ToolChunkingHints        bool
+	ThinkingSignature        bool
+	ToolUseXMLFilter         bool
+	ImageDedup               bool
+	LowEffortWithoutThinking bool
+	StructuredToolHistory    bool
+	NormalizeKiroToolParams  bool
+	ImageDownscale           bool
+	BuilderIDPlaceholderArn  string
+	PromptCacheMode          string
+	PromptCacheScope         string
+	PromptCacheMaxEntries    int
+	SimulateAnthropicCache   bool
+	SchedulingMode           string
+	ImplicitAnthropicCache   bool
+	CLIEndpointFirst         bool
 }
 
 func boolOrDefault(v *bool, def bool) bool {
@@ -105,23 +109,24 @@ func boolOrDefault(v *bool, def bool) bool {
 // ResolveCompatSettings applies defaults to stored settings.
 func ResolveCompatSettings(s CompatSettings) CompatConfig {
 	out := CompatConfig{
-		AccountThrottleCooldown: defaultAccountThrottleCooldown,
-		NativeReasoningEffort:   boolOrDefault(s.NativeReasoningEffort, true),
-		ToolChunkingHints:       boolOrDefault(s.ToolChunkingHints, true),
-		ThinkingSignature:       boolOrDefault(s.ThinkingSignature, true),
-		ToolUseXMLFilter:        boolOrDefault(s.ToolUseXMLFilter, true),
-		ImageDedup:              boolOrDefault(s.ImageDedup, true),
-		StructuredToolHistory:   s.StructuredToolHistory,
-		NormalizeKiroToolParams: s.NormalizeKiroToolParams,
-		ImageDownscale:          s.ImageDownscale,
-		BuilderIDPlaceholderArn: PlaceholderArnOff,
-		PromptCacheMode:         PromptCacheModeFull,
-		PromptCacheScope:        PromptCacheScopeAuto,
-		PromptCacheMaxEntries:   defaultPromptCacheMaxEntries,
-		SimulateAnthropicCache:  boolOrDefault(s.SimulateAnthropicCache, true),
-		SchedulingMode:          SchedulingSticky,
-		ImplicitAnthropicCache:  boolOrDefault(s.ImplicitAnthropicCache, true),
-		CLIEndpointFirst:        s.CLIEndpointFirst,
+		AccountThrottleCooldown:  defaultAccountThrottleCooldown,
+		NativeReasoningEffort:    boolOrDefault(s.NativeReasoningEffort, true),
+		ToolChunkingHints:        boolOrDefault(s.ToolChunkingHints, true),
+		ThinkingSignature:        boolOrDefault(s.ThinkingSignature, true),
+		ToolUseXMLFilter:         boolOrDefault(s.ToolUseXMLFilter, true),
+		ImageDedup:               boolOrDefault(s.ImageDedup, true),
+		LowEffortWithoutThinking: boolOrDefault(s.LowEffortWithoutThinking, true),
+		StructuredToolHistory:    s.StructuredToolHistory,
+		NormalizeKiroToolParams:  s.NormalizeKiroToolParams,
+		ImageDownscale:           s.ImageDownscale,
+		BuilderIDPlaceholderArn:  PlaceholderArnOff,
+		PromptCacheMode:          PromptCacheModeFull,
+		PromptCacheScope:         PromptCacheScopeAuto,
+		PromptCacheMaxEntries:    defaultPromptCacheMaxEntries,
+		SimulateAnthropicCache:   boolOrDefault(s.SimulateAnthropicCache, true),
+		SchedulingMode:           SchedulingSticky,
+		ImplicitAnthropicCache:   boolOrDefault(s.ImplicitAnthropicCache, true),
+		CLIEndpointFirst:         s.CLIEndpointFirst,
 	}
 	if s.AccountThrottleCooldownMinutes > 0 {
 		out.AccountThrottleCooldown = time.Duration(s.AccountThrottleCooldownMinutes) * time.Minute

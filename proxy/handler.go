@@ -4150,6 +4150,7 @@ func compatEffectiveSettings(c config.CompatConfig) map[string]interface{} {
 		"thinkingSignature":              c.ThinkingSignature,
 		"toolUseXmlFilter":               c.ToolUseXMLFilter,
 		"imageDedup":                     c.ImageDedup,
+		"lowEffortWithoutThinking":       c.LowEffortWithoutThinking,
 		"structuredToolHistory":          c.StructuredToolHistory,
 		"normalizeKiroToolParams":        c.NormalizeKiroToolParams,
 		"imageDownscale":                 c.ImageDownscale,

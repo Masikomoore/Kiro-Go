@@ -122,9 +122,9 @@ func TestClaudeToKiroNativeReasoningRules(t *testing.T) {
 		return &ClaudeRequest{Model: "claude-opus-4.7", MaxTokens: 1000, Messages: []ClaudeMessage{{Role: "user", Content: "hi"}}}
 	}
 
-	plain := ClaudeToKiro(base(), false)
-	if plain.AdditionalModelRequestFields != nil {
-		t.Fatalf("no thinking and no effort must send nothing, got %v", plain.AdditionalModelRequestFields)
+	// Kiro reasons anyway and rejects thinking disabled, so low is the cheapest.
+	if got := effortOf(t, ClaudeToKiro(base(), false).AdditionalModelRequestFields); got != "low" {
+		t.Fatalf("no thinking and no effort: got %q, want low", got)
 	}
 
 	effortOnly := base()
@@ -135,9 +135,32 @@ func TestClaudeToKiroNativeReasoningRules(t *testing.T) {
 
 	disabled := base()
 	disabled.Thinking = &ClaudeThinkingConfig{Type: "disabled"}
+	if got := effortOf(t, ClaudeToKiro(disabled, false).AdditionalModelRequestFields); got != "low" {
+		t.Fatalf("thinking disabled: got %q, want low", got)
+	}
 	disabled.OutputConfig = &ClaudeOutputConfig{Effort: "high"}
-	if fields := ClaudeToKiro(disabled, false).AdditionalModelRequestFields; fields != nil {
-		t.Fatalf("thinking disabled must send nothing, got %v", fields)
+	if got := effortOf(t, ClaudeToKiro(disabled, false).AdditionalModelRequestFields); got != "high" {
+		t.Fatalf("thinking disabled with an explicit effort: got %q, want high", got)
+	}
+}
+
+func TestLowEffortWithoutThinkingSwitchOff(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	off := false
+	if err := config.UpdateCompatSettings(config.CompatSettings{LowEffortWithoutThinking: &off}); err != nil {
+		t.Fatalf("update compat: %v", err)
+	}
+	t.Cleanup(func() { _ = config.UpdateCompatSettings(config.CompatSettings{}) })
+
+	req := &ClaudeRequest{Model: "claude-opus-4.7", MaxTokens: 1000, Messages: []ClaudeMessage{{Role: "user", Content: "hi"}}}
+	if fields := ClaudeToKiro(req, false).AdditionalModelRequestFields; fields != nil {
+		t.Fatalf("switch off: no thinking must send nothing, got %v", fields)
+	}
+	req.OutputConfig = &ClaudeOutputConfig{Effort: "medium"}
+	if got := effortOf(t, ClaudeToKiro(req, false).AdditionalModelRequestFields); got != "medium" {
+		t.Fatalf("switch off keeps an explicit effort: got %q", got)
 	}
 }
 
@@ -171,8 +194,8 @@ func TestOpenAIReasoningEffortMapsToOutputConfig(t *testing.T) {
 		t.Fatalf("effort = %q, want medium", got)
 	}
 	req.ReasoningEffort = "none"
-	if fields := OpenAIToKiro(req, false).AdditionalModelRequestFields; fields != nil {
-		t.Fatalf("reasoning_effort none must send nothing, got %v", fields)
+	if got := effortOf(t, OpenAIToKiro(req, false).AdditionalModelRequestFields); got != "low" {
+		t.Fatalf("reasoning_effort none: got %q, want low", got)
 	}
 }
 
