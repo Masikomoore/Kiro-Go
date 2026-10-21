@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/base64"
 	"fmt"
+	"kiro-go/config"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -66,6 +67,7 @@ func TestDedupeKiroImagesKeepsLatestCopy(t *testing.T) {
 }
 
 func TestTruncatePayloadDropsOldImagesBeforeTurns(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
 	payload := &KiroPayload{}
 	history := []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
 	for i := 0; i < 8; i++ {
@@ -76,7 +78,7 @@ func TestTruncatePayloadDropsOldImagesBeforeTurns(t *testing.T) {
 
 	truncatePayloadToLimit(payload, true)
 
-	if size := payloadByteSize(payload); size > maxPayloadBytes {
+	if size := payloadByteSize(payload); size > maxPayloadBytes() {
 		t.Fatalf("payload still %d bytes", size)
 	}
 	got := payload.ConversationState.History
@@ -98,6 +100,7 @@ func TestTruncatePayloadDropsOldImagesBeforeTurns(t *testing.T) {
 }
 
 func TestTruncatePayloadCompactsLargeHistoryTextBeforeDroppingTurns(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
 	payload := &KiroPayload{}
 	history := []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
 	for i := 0; i < 12; i++ {
@@ -140,7 +143,7 @@ func TestCapToolResultTexts(t *testing.T) {
 
 func TestTruncateCurrentMessageKeepsValidUTF8(t *testing.T) {
 	payload := &KiroPayload{}
-	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{Content: strings.Repeat("字", maxPayloadBytes)}
+	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{Content: strings.Repeat("字", maxPayloadBytes())}
 	truncateCurrentMessage(payload)
 	if !utf8.ValidString(payload.ConversationState.CurrentMessage.UserInputMessage.Content) {
 		t.Fatal("hard truncation must not split a rune")
@@ -151,6 +154,7 @@ func TestTruncateCurrentMessageKeepsValidUTF8(t *testing.T) {
 // cannot make the payload fit. It used to drop them anyway and blank the
 // user's text (live: 82 of 86 entries dropped, 1.6 MB still sent).
 func TestTruncatePayloadKeepsHistoryWhenCurrentImagesAloneExceedLimit(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
 	payload := &KiroPayload{}
 	history := []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
 	for i := 0; i < 20; i++ {
@@ -177,16 +181,46 @@ func TestTruncatePayloadKeepsHistoryWhenCurrentImagesAloneExceedLimit(t *testing
 
 // A current message whose text is what overflows is still truncated.
 func TestTruncatePayloadStillTruncatesOversizedCurrentText(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
 	payload := &KiroPayload{}
 	payload.ConversationState.History = []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
 	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{Content: strings.Repeat("z", 1200*1024), ModelID: "claude-sonnet-4.5"}
 
 	truncatePayloadToLimit(payload, true)
 
-	if size := payloadByteSize(payload); size > maxPayloadBytes {
+	if size := payloadByteSize(payload); size > maxPayloadBytes() {
 		t.Fatalf("payload still %d bytes", size)
 	}
 	if payload.Shrink.Stage != "current" {
 		t.Fatalf("stage = %q, want current", payload.Shrink.Stage)
+	}
+}
+
+// The default limit is 2 MB (compat.maxPayloadKB): a 1.5 MB payload that the
+// old 900 KB limit truncated is now sent whole (live: Kiro accepted 1.06–1.6 MB).
+func TestTruncatePayloadDefaultLimitKeepsLargeHistory(t *testing.T) {
+	build := func() *KiroPayload {
+		payload := &KiroPayload{}
+		history := []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
+		for i := 0; i < 60; i++ {
+			history = append(history, userTurn(fmt.Sprintf("turn %d: %s", i, strings.Repeat("w", 25*1024))), assistantTurn("ok"))
+		}
+		payload.ConversationState.History = history
+		payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{Content: "now", ModelID: "claude-sonnet-4.5"}
+		return payload
+	}
+	useCompat(t, config.CompatSettings{})
+	p := build()
+	before := len(p.ConversationState.History)
+	truncatePayloadToLimit(p, true)
+	if p.Shrink.Stage != "" || len(p.ConversationState.History) != before {
+		t.Fatalf("a %d-byte payload must fit the 2 MB default, got stage %q", payloadByteSize(p), p.Shrink.Stage)
+	}
+
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900})
+	p = build()
+	truncatePayloadToLimit(p, true)
+	if p.Shrink.Stage == "" || payloadByteSize(p) > 900*1024 {
+		t.Fatalf("with maxPayloadKB=900 the payload must be shrunk to fit, got stage %q size %d", p.Shrink.Stage, payloadByteSize(p))
 	}
 }

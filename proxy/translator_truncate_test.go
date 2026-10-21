@@ -8,7 +8,7 @@ import (
 
 // TestClaudeToKiroTruncatesOversizedHistory builds a conversation whose history
 // far exceeds the upstream input limit and verifies the converted payload is
-// trimmed below maxPayloadBytes, that a truncation placeholder is inserted, and
+// trimmed below maxPayloadBytes(), that a truncation placeholder is inserted, and
 // that the current message is preserved.
 func TestClaudeToKiroTruncatesOversizedHistory(t *testing.T) {
 	// ~2KB chunk repeated across many turns to blow past the byte limit.
@@ -37,8 +37,8 @@ func TestClaudeToKiroTruncatesOversizedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
 	}
-	if len(raw) > maxPayloadBytes {
-		t.Fatalf("payload size %d exceeds limit %d after truncation", len(raw), maxPayloadBytes)
+	if len(raw) > maxPayloadBytes() {
+		t.Fatalf("payload size %d exceeds limit %d after truncation", len(raw), maxPayloadBytes())
 	}
 
 	// The current message must be preserved.

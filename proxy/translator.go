@@ -55,18 +55,21 @@ const minimalFallbackUserContent = "."
 const toolResultsContinuationPrefix = "Tool results:"
 const toolResultImagePlaceholder = "[Tool returned an image; the image is attached to this message.]"
 
-// maxPayloadBytes is the upper bound for the serialized Kiro request body.
-// Kiro's upstream rejects oversized requests with HTTP 400
-// "Input is too long." (CONTENT_LENGTH_EXCEEDS_THRESHOLD). When a converted
-// payload exceeds this size we drop the oldest history turns (keeping the
-// system priming, the most recent turns, the active tool turn, and the current
-// message) and insert a placeholder note so the model knows context was elided.
-// The limit is kept conservatively below the observed upstream threshold to
-// leave room for headers and minor serialization overhead.
-const maxPayloadBytes = 900 * 1024
+// maxPayloadBytes returns the upper bound for the serialized Kiro request body
+// (compat.maxPayloadKB, default 2 MB). When a converted payload exceeds it we
+// drop the oldest history turns (keeping the system priming, the most recent
+// turns, the active tool turn, and the current message) and insert a
+// placeholder note so the model knows context was elided. Kiro rejects
+// oversized requests with HTTP 400 "Input is too long."
+// (CONTENT_LENGTH_EXCEEDS_THRESHOLD); the old fixed 900 KB was set below that,
+// but Kiro accepted 1.06–1.6 MB requests while 900 KB dropped history and cost
+// full cache misses. Lower the setting if those rejections appear.
+func maxPayloadBytes() int {
+	return config.GetCompatConfig().MaxPayloadBytes
+}
 
 // truncationPlaceholder is inserted in history where older turns were dropped to
-// fit within maxPayloadBytes.
+// fit within maxPayloadBytes().
 const truncationPlaceholder = "[Earlier conversation history was truncated to fit the model's input limit. Older messages and tool activity have been omitted.]"
 
 // minRecentHistoryTurns is the number of most-recent history entries always kept
@@ -1863,7 +1866,7 @@ func sanitizeKiroHistory(history []KiroHistoryMessage, currentToolResultIDs map[
 }
 
 // truncatePayloadToLimit drops the oldest conversation history turns until the
-// serialized payload fits within maxPayloadBytes. It preserves, in order:
+// serialized payload fits within maxPayloadBytes(). It preserves, in order:
 //   - the system priming pair (if present) at the front of history,
 //   - the most recent turns (at least minRecentHistoryTurns, and always the
 //     active tool turn that pairs with the current message),
@@ -1878,7 +1881,7 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 	}
 	originalBytes := payloadByteSize(payload)
 	payload.Shrink = payloadShrinkInfo{OriginalBytes: originalBytes}
-	if originalBytes <= maxPayloadBytes {
+	if originalBytes <= maxPayloadBytes() {
 		return
 	}
 
@@ -1891,11 +1894,11 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 	// Cheaper reductions first: old images, then the head and tail of very
 	// large history text. Whole turns are dropped only if that is not enough.
 	payload.Shrink.Stage = "images"
-	if dropOldHistoryImages(history, primingCount) && payloadByteSize(payload) <= maxPayloadBytes {
+	if dropOldHistoryImages(history, primingCount) && payloadByteSize(payload) <= maxPayloadBytes() {
 		return
 	}
 	payload.Shrink.Stage = "compact"
-	if compactHistoryText(history, primingCount) && payloadByteSize(payload) <= maxPayloadBytes {
+	if compactHistoryText(history, primingCount) && payloadByteSize(payload) <= maxPayloadBytes() {
 		return
 	}
 	payload.Shrink.Stage = "drop"
@@ -1951,7 +1954,7 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 
 	// If still too large (current message or retained tail alone exceeds the
 	// limit), shrink the current message content as a last resort.
-	if payloadByteSize(payload) > maxPayloadBytes {
+	if payloadByteSize(payload) > maxPayloadBytes() {
 		payload.Shrink.Stage = "current"
 		truncateCurrentMessage(payload)
 	}
@@ -1993,20 +1996,20 @@ func currentMessageModelID(payload *KiroPayload) string {
 // resort when even the minimal retained history plus current message exceeds the
 // limit.
 // currentMessageWithoutTextExceedsLimit reports whether the payload, as it
-// stands, exceeds maxPayloadBytes with the current message's text removed.
+// stands, exceeds maxPayloadBytes() with the current message's text removed.
 func currentMessageWithoutTextExceedsLimit(payload *KiroPayload) bool {
 	cur := &payload.ConversationState.CurrentMessage.UserInputMessage
 	content := cur.Content
 	cur.Content = ""
 	size := payloadByteSize(payload)
 	cur.Content = content
-	return size > maxPayloadBytes
+	return size > maxPayloadBytes()
 }
 
 func truncateCurrentMessage(payload *KiroPayload) {
 	cur := &payload.ConversationState.CurrentMessage.UserInputMessage
 	overhead := payloadByteSize(payload) - len(cur.Content)
-	budget := maxPayloadBytes - overhead
+	budget := maxPayloadBytes() - overhead
 	if budget < 0 {
 		budget = 0
 	}

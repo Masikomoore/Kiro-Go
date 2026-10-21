@@ -4218,6 +4218,8 @@ func compatEffectiveSettings(c config.CompatConfig) map[string]interface{} {
 		"toolUseXmlFilter":               c.ToolUseXMLFilter,
 		"imageDedup":                     c.ImageDedup,
 		"lowEffortWithoutThinking":       c.LowEffortWithoutThinking,
+		"capMaxEffort":                   c.CapMaxEffort,
+		"maxPayloadKB":                   c.MaxPayloadBytes / 1024,
 		"structuredToolHistory":          c.StructuredToolHistory,
 		"normalizeKiroToolParams":        c.NormalizeKiroToolParams,
 		"imageDownscale":                 c.ImageDownscale,

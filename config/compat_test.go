@@ -49,3 +49,20 @@ func TestValidateCompatSettings(t *testing.T) {
 		t.Fatalf("valid settings rejected: %v", err)
 	}
 }
+
+func TestMaxPayloadKB(t *testing.T) {
+	if got := ResolveCompatSettings(CompatSettings{}).MaxPayloadBytes; got != 2048*1024 {
+		t.Fatalf("default = %d, want 2 MB", got)
+	}
+	if got := ResolveCompatSettings(CompatSettings{MaxPayloadKB: 900}).MaxPayloadBytes; got != 900*1024 {
+		t.Fatalf("900 KB = %d", got)
+	}
+	for _, kb := range []int{-1, 100, 9000} {
+		if err := ValidateCompatSettings(CompatSettings{MaxPayloadKB: kb}); err == nil {
+			t.Fatalf("maxPayloadKB=%d must be rejected", kb)
+		}
+	}
+	if !ResolveCompatSettings(CompatSettings{}).CapMaxEffort {
+		t.Fatal("capMaxEffort must default on")
+	}
+}

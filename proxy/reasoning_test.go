@@ -59,6 +59,8 @@ func TestSelectReasoningEffort(t *testing.T) {
 		{"suffix only defaults high", effortsWithXHigh, "", nil, "high"},
 		{"unknown effort defaults high", effortsWithXHigh, "turbo", nil, "high"},
 		{"openai minimal", effortsWithXHigh, "minimal", nil, "low"},
+		{"max capped to xhigh", effortsWithXHigh, "max", nil, "xhigh"},
+		{"max kept on 4.6 (no xhigh)", effortsWithoutXHigh, "max", nil, "max"},
 	}
 	for _, tc := range cases {
 		if got := selectReasoningEffort(tc.supported, tc.explicit, tc.cfg); got != tc.want {
@@ -237,5 +239,20 @@ func TestCallKiroAPIAddsIDEThinkingWrapperOnlyForOAuth(t *testing.T) {
 	}
 	if _, ok := payload.AdditionalModelRequestFields["thinking"]; ok {
 		t.Fatal("endpoint adaptation must not mutate the shared payload")
+	}
+}
+
+// compat.capMaxEffort off sends max as asked.
+func TestCapMaxEffortSwitchOff(t *testing.T) {
+	off := false
+	useCompat(t, config.CompatSettings{CapMaxEffort: &off})
+	req := &ClaudeRequest{Model: "claude-opus-5.5", MaxTokens: 1000, Messages: []ClaudeMessage{{Role: "user", Content: "hi"}},
+		OutputConfig: &ClaudeOutputConfig{Effort: "max"}}
+	if got := effortOf(t, ClaudeToKiro(req, false).AdditionalModelRequestFields); got != "max" {
+		t.Fatalf("switch off: got %q, want max", got)
+	}
+	useCompat(t, config.CompatSettings{})
+	if got := effortOf(t, ClaudeToKiro(req, false).AdditionalModelRequestFields); got != "xhigh" {
+		t.Fatalf("default: got %q, want xhigh", got)
 	}
 }

@@ -23,6 +23,14 @@ type CompatSettings struct {
 	// LowEffortWithoutThinking sends effort=low when the client did not ask
 	// for thinking. Kiro always reasons on these models and bills it.
 	LowEffortWithoutThinking *bool `json:"lowEffortWithoutThinking,omitempty"`
+	// CapMaxEffort sends effort=xhigh instead of max where the model takes
+	// xhigh. On Kiro, max on large prompts reasoned ~630 s, was billed ~14.8
+	// credits and ended without an answer, again and again.
+	CapMaxEffort *bool `json:"capMaxEffort,omitempty"`
+	// MaxPayloadKB is the Kiro request size above which history is shrunk.
+	// Default 2048; Kiro accepted 1.6 MB requests while the old 900 KB limit
+	// dropped history and cost full cache misses.
+	MaxPayloadKB int `json:"maxPayloadKB,omitempty"`
 	// SchedulingMode picks the upstream account per request: sticky (default)
 	// | round_robin | priority. See the Scheduling* constants.
 	SchedulingMode string `json:"schedulingMode,omitempty"`
@@ -75,6 +83,9 @@ const (
 
 	defaultAccountThrottleCooldown = 10 * time.Minute
 	defaultPromptCacheMaxEntries   = 20000
+	defaultMaxPayloadKB            = 2048
+	minMaxPayloadKB                = 256
+	maxMaxPayloadKB                = 8192
 )
 
 // CompatConfig is CompatSettings with defaults applied.
@@ -86,6 +97,8 @@ type CompatConfig struct {
 	ToolUseXMLFilter         bool
 	ImageDedup               bool
 	LowEffortWithoutThinking bool
+	CapMaxEffort             bool
+	MaxPayloadBytes          int
 	StructuredToolHistory    bool
 	NormalizeKiroToolParams  bool
 	ImageDownscale           bool
@@ -116,6 +129,8 @@ func ResolveCompatSettings(s CompatSettings) CompatConfig {
 		ToolUseXMLFilter:         boolOrDefault(s.ToolUseXMLFilter, true),
 		ImageDedup:               boolOrDefault(s.ImageDedup, true),
 		LowEffortWithoutThinking: boolOrDefault(s.LowEffortWithoutThinking, true),
+		CapMaxEffort:             boolOrDefault(s.CapMaxEffort, true),
+		MaxPayloadBytes:          defaultMaxPayloadKB * 1024,
 		StructuredToolHistory:    s.StructuredToolHistory,
 		NormalizeKiroToolParams:  s.NormalizeKiroToolParams,
 		ImageDownscale:           s.ImageDownscale,
@@ -127,6 +142,9 @@ func ResolveCompatSettings(s CompatSettings) CompatConfig {
 		SchedulingMode:           SchedulingSticky,
 		ImplicitAnthropicCache:   boolOrDefault(s.ImplicitAnthropicCache, true),
 		CLIEndpointFirst:         s.CLIEndpointFirst,
+	}
+	if s.MaxPayloadKB > 0 {
+		out.MaxPayloadBytes = s.MaxPayloadKB * 1024
 	}
 	if s.AccountThrottleCooldownMinutes > 0 {
 		out.AccountThrottleCooldown = time.Duration(s.AccountThrottleCooldownMinutes) * time.Minute
@@ -180,6 +198,9 @@ func ValidateCompatSettings(s CompatSettings) error {
 	}
 	if s.PromptCacheMaxEntries < 0 {
 		return fmt.Errorf("promptCacheMaxEntries must not be negative")
+	}
+	if s.MaxPayloadKB != 0 && (s.MaxPayloadKB < minMaxPayloadKB || s.MaxPayloadKB > maxMaxPayloadKB) {
+		return fmt.Errorf("maxPayloadKB must be between %d and %d", minMaxPayloadKB, maxMaxPayloadKB)
 	}
 	switch strings.ToLower(strings.TrimSpace(s.BuilderIDPlaceholderArn)) {
 	case "", PlaceholderArnOff, PlaceholderArnOnDemand, PlaceholderArnAlways:

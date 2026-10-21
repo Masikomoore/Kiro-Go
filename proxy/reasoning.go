@@ -9,6 +9,7 @@ package proxy
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -88,6 +89,11 @@ func selectReasoningEffort(supported []string, explicit string, thinkingCfg *Cla
 	}
 	if effort == "" {
 		effort = defaultThinkingEffort
+	}
+	// compat.capMaxEffort: on Kiro, max on large prompts reasoned until
+	// Kiro's own cap (~630 s, ~14.8 credits) and ended with no answer.
+	if effort == "max" && config.GetCompatConfig().CapMaxEffort && slices.Contains(supported, "xhigh") {
+		effort = "xhigh"
 	}
 	for _, s := range supported {
 		if s == effort {

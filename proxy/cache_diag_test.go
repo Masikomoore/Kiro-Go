@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"kiro-go/config"
 	"strings"
 	"testing"
 )
@@ -26,7 +27,7 @@ func TestPrefixDivergence(t *testing.T) {
 }
 
 // bigConversation builds a conversation whose Kiro payload exceeds
-// maxPayloadBytes, like the ~920 KB requests seen on CA2.
+// maxPayloadBytes(), like the ~920 KB requests seen on CA2.
 func bigConversation(turns int) *ClaudeRequest {
 	msgs := []ClaudeMessage{}
 	for i := 0; i < turns; i++ {
@@ -54,6 +55,7 @@ func resetTruncationBoundaries(t *testing.T) {
 // Kiro history right after the system priming so upstream could not reuse its
 // cached prefix. The boundary now stays put while the payload fits.
 func TestTruncationKeepsKiroHistoryPrefixStable(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
 	resetTruncationBoundaries(t)
 	first := ClaudeToKiro(bigConversation(30), false)
 	second := ClaudeToKiro(bigConversation(31), false)
@@ -68,13 +70,14 @@ func TestTruncationKeepsKiroHistoryPrefixStable(t *testing.T) {
 	if got := prefixDivergence(k1, k2, k1n, k2n, false); got != "ok" {
 		t.Fatalf("the Kiro history prefix must stay stable, got %q (dropped %d then %d)", got, first.Shrink.DroppedTurns, second.Shrink.DroppedTurns)
 	}
-	if size := payloadByteSize(first); size > int(float64(maxPayloadBytes)*truncationTargetFraction)+64*1024 {
+	if size := payloadByteSize(first); size > int(float64(maxPayloadBytes())*truncationTargetFraction)+64*1024 {
 		t.Fatalf("a new boundary should leave headroom, payload is %d bytes", size)
 	}
 }
 
 // Once the kept suffix no longer fits, the boundary moves once and then holds.
 func TestTruncationBoundaryMovesOnlyWhenFull(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
 	resetTruncationBoundaries(t)
 	moves := 0
 	var prev []uint64
@@ -85,7 +88,7 @@ func TestTruncationBoundaryMovesOnlyWhenFull(t *testing.T) {
 		if prev != nil && prefixDivergence(prev, cur, prevNoID, curNoID, false) != "ok" {
 			moves++
 		}
-		if size := payloadByteSize(p); size > maxPayloadBytes {
+		if size := payloadByteSize(p); size > maxPayloadBytes() {
 			t.Fatalf("turn %d payload %d bytes exceeds the limit", turns, size)
 		}
 		prev, prevNoID = cur, curNoID

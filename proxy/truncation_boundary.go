@@ -23,7 +23,7 @@ import (
 // cut rarely (e.g. arXiv 2604.03515).
 
 const (
-	// truncationTargetFraction is the share of maxPayloadBytes a new boundary
+	// truncationTargetFraction is the share of maxPayloadBytes() a new boundary
 	// aims for, leaving headroom so the boundary can stay put for a while.
 	truncationTargetFraction = 0.8
 	truncationBoundaryTTL    = 2 * time.Hour
@@ -68,7 +68,7 @@ func stableTruncationStart(conversationID string, conversation []KiroHistoryMess
 				for _, s := range entrySizes[i:] {
 					size += s
 				}
-				if size <= maxPayloadBytes || len(conversation)-i <= minRecentHistoryTurns {
+				if size <= maxPayloadBytes() || len(conversation)-i <= minRecentHistoryTurns {
 					rememberTruncationBoundary(conversationID, prev.firstKept, now)
 					return i
 				}
@@ -77,7 +77,7 @@ func stableTruncationStart(conversationID string, conversation []KiroHistoryMess
 		}
 	}
 
-	target := int(float64(maxPayloadBytes) * truncationTargetFraction)
+	target := int(float64(maxPayloadBytes()) * truncationTargetFraction)
 	keepFrom := len(conversation)
 	running := baseSize
 	for i := len(conversation) - 1; i >= 0; i-- {
