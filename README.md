@@ -4,27 +4,77 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Convert Kiro accounts to OpenAI / Anthropic compatible API service.
+Turn Kiro accounts into an Anthropic / OpenAI compatible API. This fork of [Quorinex/Kiro-Go](https://github.com/Quorinex/Kiro-Go) (MIT) has been hardened on production traffic at [xclis.ai](https://xclis.ai): many accounts, several egress IPs, long conversations, and all kinds of third-party clients, with usage that matches what Kiro actually bills.
 
 [English](README.md) | [中文](README_CN.md) | [Tiếng Việt](README_VI.md)
 
 If this project helps you, a Star would mean a lot.
 
+## Sound familiar?
+
+- A conversation lands on a different account every turn, so Kiro's prompt cache never hits and credits disappear?
+- WorkBuddy, Codex, or an SDK behind a gateway never shows a single cache hit on the bill?
+- An effort=max turn gets cut off at the 10-minute mark, or reasons for ten minutes, answers nothing, and still burns credits?
+- A long conversation with screenshots crosses 900 KB and the model suddenly forgets everything?
+- You want each account on its own egress IP, including the login itself?
+- With a dozen accounts, you can't tell in the panel which one uses which proxy or which one is nearly out of credits?
+
+This fork fixes all of these.
+
+## What changed compared with upstream
+
+### Save money: cache and usage that match Kiro's real billing
+
+| Problem | Upstream | This fork |
+|---|---|---|
+| Conversations hop between accounts and lose Kiro's prefix cache | Every request rotates to the next account | Session affinity keeps a conversation on one account; sticky / round_robin / priority scheduling and per-account priority. Measured on one conversation: first byte 12.2 s → 3.9 s, credits per turn 3.46 → about 1.1 |
+| Clients never see cache hits and pay full price | Simulates only when the request carries `cache_control`, from the client's own messages | Simulates the Anthropic prompt cache from what is actually sent to Kiro (after conversion and truncation), so cache read / creation track Kiro's charges; implicit caching for third-party clients without `cache_control`; scoped per session / API key / account and kept across restarts |
+| Usage is miscounted | Reasoning not counted as output; web_search billed for the last round only | Reasoning counts as output; every web_search round bills its input and output; streams that fail before any output bill nothing |
+| Tool turns are paid for twice | The previous tool turn is flattened to text, breaking the cache there | Optional structured tool history keeps tool calls intact so later turns read the cache |
+
+### Stay up: long reasoning and long conversations keep working
+
+- **Long reasoning:** a 2-minute idle timeout replaces the fixed total deadline; effort=max is sent as xhigh; a turn Kiro billed but answered with reasoning only ends as `max_tokens` and is billed, instead of a 503 that clients retry forever.
+- **Large contexts:** the request limit is configurable (default 2 MB, was a fixed 900 KB); history is no longer dropped when the current message alone is over the limit; the truncation point stays stable across turns so it doesn't keep breaking the cache; images are de-duplicated and can be downscaled.
+- **Failover:** client errors, rate limits, quota, invalid credentials and transient faults are told apart, so accounts aren't penalized by mistake, and clients get the right 400 / 429 / 503.
+- **Streaming:** SSE pings keep silent generations alive; truncated streams are reported as errors, never as a clean finish.
+
+### Multiple egress IPs: every account can use its own proxy
+
+- Save several proxies (SOCKS5 / HTTP), name them, and test them with one click.
+- Pick a proxy when adding an account: login and token requests go out from that IP, and so do later refreshes and chat requests.
+- Edit a proxy's address and the accounts bound to it follow.
+
+### Admin panel
+
+- Accounts are grouped by egress; drag groups to reorder them; groups without a usable account start collapsed.
+- Drag cards to set scheduling priority; a newly added account goes first in its group.
+- Large / medium / small cards; out-of-credits and disabled accounts are greyed out, while a disabled account with credits left keeps a coloured quota bar; quota reset countdown.
+- Compatibility switches apply from the panel without a restart.
+
+### Performance and compatibility
+
+- Per-request config writes are batched (about 1.5–7 ms → about 41 ns per request); the request body is encoded once per endpoint; faster first byte.
+- fable / mythos models and the 1M context window; system turns inside messages and `temperature: 0` handled correctly; signed thinking blocks; leaked tool_use XML stripped from answers; `<thinking>` inside quotes or code fences left alone; "Kiro" in replies can be rewritten to "Claude".
+
+All switches are described under [Compatibility and Prompt-Cache Settings](#compatibility-and-prompt-cache-settings).
+
 ## Features
 
 - Anthropic `/v1/messages`, OpenAI `/v1/chat/completions` & OpenAI `/v1/responses`
-- Multi-account pool with round-robin load balancing
+- Multi-account pool: session affinity, three scheduling modes, per-account priority, groups by egress IP
 - Auto token refresh, SSE streaming, Web admin panel
 - Multiple auth: AWS Builder ID, IAM Identity Center (Enterprise SSO), Microsoft Enterprise SSO, SSO Token, local cache, credentials JSON, Kiro API Key
+- Simulated Anthropic prompt cache, with usage that matches Kiro's billing
 - Usage tracking, account import/export, i18n (CN / EN / VI)
-- Support configuring outbound proxy (SOCKS5 / HTTP)
+- Several outbound proxies (SOCKS5 / HTTP), with a proxy per account
 
 ## Quick Start
 
 ### Docker Compose (Recommended)
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
+git clone https://github.com/Masikomoore/Kiro-Go.git
 cd Kiro-Go
 mkdir -p data
 docker-compose up -d
@@ -33,19 +83,24 @@ docker-compose up -d
 ### Docker Run
 
 ```bash
+git clone https://github.com/Masikomoore/Kiro-Go.git
+cd Kiro-Go
+docker build -t kiro-go .
 docker run -d \
   --name kiro-go \
   -p 8080:8080 \
   -e ADMIN_PASSWORD=your_secure_password \
   -v /path/to/data:/app/data \
   --restart unless-stopped \
-  ghcr.io/quorinex/kiro-go:latest
+  kiro-go
 ```
+
+> `ghcr.io/quorinex/kiro-go` is the upstream image and does not include this fork's changes.
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
+git clone https://github.com/Masikomoore/Kiro-Go.git
 cd Kiro-Go
 go build -o kiro-go .
 ./kiro-go
@@ -177,9 +232,9 @@ The global proxy takes effect immediately without restarting.
 
 Friendly discussion is welcome. If you run into issues, try asking Claude Code, Codex, or similar tools for help first — most problems can be solved that way. PRs are even better.
 
-## Friend Links
+## Sponsor
 
-- [LINUX DO](https://linux.do)
+- [xclis.ai — X全球中转](https://xclis.ai)
 
 ## Disclaimer
 
