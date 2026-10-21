@@ -146,3 +146,47 @@ func TestTruncateCurrentMessageKeepsValidUTF8(t *testing.T) {
 		t.Fatal("hard truncation must not split a rune")
 	}
 }
+
+// When the current message's images alone exceed the limit, dropping turns
+// cannot make the payload fit. It used to drop them anyway and blank the
+// user's text (live: 82 of 86 entries dropped, 1.6 MB still sent).
+func TestTruncatePayloadKeepsHistoryWhenCurrentImagesAloneExceedLimit(t *testing.T) {
+	payload := &KiroPayload{}
+	history := []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
+	for i := 0; i < 20; i++ {
+		history = append(history, userTurn(fmt.Sprintf("turn %d: %s", i, strings.Repeat("y", 20*1024))), assistantTurn("ok"))
+	}
+	payload.ConversationState.History = history
+	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{
+		Content: "what is in this screenshot?", ModelID: "claude-sonnet-4.5",
+		Images: []KiroImage{kiroImage(fakePNG(1, 800*1024))},
+	}
+
+	truncatePayloadToLimit(payload, true)
+
+	if got := len(payload.ConversationState.History); got != len(history) {
+		t.Fatalf("history must be kept when dropping it cannot help: %d -> %d entries", len(history), got)
+	}
+	if got := payload.ConversationState.CurrentMessage.UserInputMessage.Content; got != "what is in this screenshot?" {
+		t.Fatalf("current text must be kept, got %q", got)
+	}
+	if payload.Shrink.Stage != "oversize" || payload.Shrink.DroppedTurns != 0 {
+		t.Fatalf("shrink = %+v, want stage oversize and no dropped turns", payload.Shrink)
+	}
+}
+
+// A current message whose text is what overflows is still truncated.
+func TestTruncatePayloadStillTruncatesOversizedCurrentText(t *testing.T) {
+	payload := &KiroPayload{}
+	payload.ConversationState.History = []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
+	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{Content: strings.Repeat("z", 1200*1024), ModelID: "claude-sonnet-4.5"}
+
+	truncatePayloadToLimit(payload, true)
+
+	if size := payloadByteSize(payload); size > maxPayloadBytes {
+		t.Fatalf("payload still %d bytes", size)
+	}
+	if payload.Shrink.Stage != "current" {
+		t.Fatalf("stage = %q, want current", payload.Shrink.Stage)
+	}
+}

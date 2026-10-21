@@ -1925,6 +1925,16 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 	payload.ConversationState.History = priming
 	baseSize := payloadByteSize(payload) + historyEntryByteSize(placeholderEntry)
 
+	// When the current message is over the limit even without its text (its
+	// images, say), neither dropping turns nor truncating that text can make
+	// the payload fit; both only cost the model context. Send it as is (live:
+	// 82 of 86 entries dropped, 1.6 MB sent anyway, and Kiro accepted it).
+	if currentMessageWithoutTextExceedsLimit(payload) {
+		payload.ConversationState.History = history
+		payload.Shrink.Stage = "oversize"
+		return
+	}
+
 	keepFrom := stableTruncationStart(payload.ConversationState.ConversationID, conversation, entrySizes, baseSize)
 
 	tail := conversation[keepFrom:]
@@ -1982,6 +1992,17 @@ func currentMessageModelID(payload *KiroPayload) string {
 // truncateCurrentMessage hard-truncates the current message content as a last
 // resort when even the minimal retained history plus current message exceeds the
 // limit.
+// currentMessageWithoutTextExceedsLimit reports whether the payload, as it
+// stands, exceeds maxPayloadBytes with the current message's text removed.
+func currentMessageWithoutTextExceedsLimit(payload *KiroPayload) bool {
+	cur := &payload.ConversationState.CurrentMessage.UserInputMessage
+	content := cur.Content
+	cur.Content = ""
+	size := payloadByteSize(payload)
+	cur.Content = content
+	return size > maxPayloadBytes
+}
+
 func truncateCurrentMessage(payload *KiroPayload) {
 	cur := &payload.ConversationState.CurrentMessage.UserInputMessage
 	overhead := payloadByteSize(payload) - len(cur.Content)
