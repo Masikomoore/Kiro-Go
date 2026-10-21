@@ -34,6 +34,12 @@ type webSearchRoundOutcome struct {
 	outputTokens       int
 	credits            float64
 	stopReasonOverride string
+	// cache is this round's input split against the simulated cache, which
+	// the round has already updated: each round is a separate Kiro call that
+	// Kiro bills and caches on its own.
+	cache   promptCacheSplit
+	profile *promptCacheProfile
+	conv    string
 }
 
 // runWebSearchLoop is the mixed-tools entry point.
@@ -46,6 +52,10 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 	var lastAccountID string
 	var totalCredits float64
 	totalOutput := 0
+	// Input is billed per round like output: every round sends the growing
+	// prompt to Kiro again, reading what the round before it cached.
+	var billed promptCacheSplit
+	var lastRound *webSearchRoundOutcome
 	reqStart := time.Now()
 	fallbackInput := estimatedInputTokens
 	// Respect native max_uses (capped by maxWebSearchRounds).
@@ -58,7 +68,7 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 		if ctx.Err() != nil {
 			return
 		}
-		round, account, err := h.callUpstreamForWebSearch(ctx, &working, thinking, fallbackInput)
+		round, account, err := h.callUpstreamForWebSearch(ctx, &working, thinking, fallbackInput, cacheProfile)
 		if err != nil {
 			logger.Warnf("[WebSearchLoop] upstream round %d failed: %v", roundIdx, err)
 			accountID := ""
@@ -76,6 +86,8 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 		}
 		totalCredits += round.credits
 		totalOutput += round.outputTokens
+		billed.add(round.cache)
+		lastRound = round
 
 		// Continue only when every tool_use is web_search, budget remains, and
 		// this round's searches fit under max_uses.
@@ -121,10 +133,7 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 		// Output is what the model generated over all rounds. Search results
 		// are not model output; the last round's input already counts them.
 		outputTokens := maxInt(totalOutput, 1)
-		inputTokens := round.inputTokens
-		if inputTokens <= 0 {
-			inputTokens = fallbackInput
-		}
+		inputTokens := billed.total()
 
 		if lastAccountID != "" {
 			h.pool.RecordSuccess(lastAccountID)
@@ -133,7 +142,8 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, totalCredits)
 		h.recordSuccessLog("claude", req.Model, lastAccountID, inputTokens+outputTokens, totalCredits, time.Since(reqStart).Milliseconds())
 
-		report := h.commitPromptCache(lastAccountID, cacheProfile)
+		report := promptCacheReport{usage: billed.usage(), include: cacheProfile != nil}
+		logPromptCacheUsage(lastRound.conv, req.Model, lastRound.profile, report.usage, inputTokens, outputTokens, totalCredits)
 
 		if req.Stream {
 			h.renderWebSearchLoopSSE(w, req.Model, content, stopReason, inputTokens, outputTokens, report)
@@ -147,8 +157,14 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 }
 
 // callUpstreamForWebSearch converts the Claude request and buffers one Kiro stream.
-func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeRequest, thinking bool, estimatedInputTokens int) (*webSearchRoundOutcome, *config.Account, error) {
+func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeRequest, thinking bool, estimatedInputTokens int, clientProfile *promptCacheProfile) (*webSearchRoundOutcome, *config.Account, error) {
 	payload := ClaudeToKiro(req, thinking)
+	// As on the plain path, the client profile only decides whether to
+	// simulate; the split follows the payload this round sends to Kiro.
+	var cacheProfile *promptCacheProfile
+	if clientProfile != nil {
+		cacheProfile = h.promptCache.BuildKiroProfile(payload, req.Model, !clientProfile.Implicit)
+	}
 	// Like the plain path: without a session or API key (third-party clients via Sub2API),
 	// keep the conversation on one account so Kiro's cache hits across turns.
 	ctx = withConversationAffinityFallback(ctx, payload)
@@ -236,6 +252,16 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 			inputTokens = estimatedInputTokens
 		}
 
+		cache := promptCacheSplit{Input: inputTokens}
+		if cacheProfile != nil {
+			cache = h.commitPromptCache(account.ID, cacheProfile).usage.split(inputTokens)
+			if cacheProfile.Implicit {
+				// The current message is reported as plain input, but Kiro has
+				// cached the whole prompt, and the next round reads it seconds later.
+				h.promptCache.Update(account.ID, h.promptCache.BuildKiroProfile(payload, req.Model, true))
+			}
+		}
+
 		// thinkingText is never sent here; it is counted because Kiro bills it,
 		// whether or not the client asked for thinking.
 		return &webSearchRoundOutcome{
@@ -245,6 +271,9 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 			outputTokens:       estimateClaudeOutputTokens(text, thinkingText, toolUses),
 			credits:            credits,
 			stopReasonOverride: stopOverride,
+			cache:              cache,
+			profile:            cacheProfile,
+			conv:               shortConversationID(payload),
 		}, account, nil
 	}
 

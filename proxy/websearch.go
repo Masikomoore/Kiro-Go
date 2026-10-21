@@ -245,6 +245,9 @@ func randomFromCharset(n int, charset string) string {
 	return string(b)
 }
 
+// callMcpAPIFunc is swapped in tests; the MCP endpoint is a fixed AWS host.
+var callMcpAPIFunc = callMcpAPI
+
 // callMcpAPI posts the JSON-RPC request to Kiro MCP and returns the parsed response.
 func callMcpAPI(account *config.Account, mcpReq *McpRequest) (*McpResponse, error) {
 	if mcpReq == nil {
@@ -378,7 +381,7 @@ func (h *Handler) performWebSearch(model, query string) (*WebSearchResults, stri
 		}
 
 		toolUseID, mcpReq := createMcpRequest(query)
-		mcpResp, err := callMcpAPI(account, mcpReq)
+		mcpResp, err := callMcpAPIFunc(account, mcpReq)
 		if err != nil {
 			logger.Warnf("[WebSearch] MCP call failed on account %s: %v", account.Email, err)
 			lastErr = err

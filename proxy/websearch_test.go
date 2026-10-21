@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"kiro-go/config"
 )
 
 func TestHasWebSearchTool_SingleNativeTool(t *testing.T) {
@@ -733,5 +735,69 @@ func TestWebSearchLoopKeepsConversationOnOneAccount(t *testing.T) {
 		if tok != tokens[0] {
 			t.Fatalf("turn %d used %q, turn 1 used %q; a conversation must stay on one account", i+1, tok, tokens[0])
 		}
+	}
+}
+
+// Each loop round is a separate Kiro call with the prompt so far, billed and
+// cached by Kiro on its own. The loop reported only the last round's input,
+// split against the cache as it stood before the turn (live: 3 rounds, 2.12
+// credits, billed as one cold 30k-token write).
+func TestWebSearchLoopBillsInputPerRound(t *testing.T) {
+	oldMcp := callMcpAPIFunc
+	callMcpAPIFunc = func(*config.Account, *McpRequest) (*McpResponse, error) {
+		inner := `{"results":[{"title":"T1","url":"https://e.com","snippet":"s1","id":"1","domain":"e.com"}],"totalResults":1,"query":"q"}`
+		return &McpResponse{Result: &McpResult{Content: []McpContent{{Type: "text", Text: inner}}}}, nil
+	}
+	defer func() { callMcpAPIFunc = oldMcp }()
+
+	contextPct := []float64{2.0, 2.5}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if calls == 0 {
+			_, _ = w.Write(awsEventStreamFrame(t, "toolUseEvent", map[string]interface{}{
+				"toolUseId": "toolu_ws1", "name": "web_search", "input": `{"query":"latest release"}`, "stop": true,
+			}))
+		} else {
+			_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "done"}))
+		}
+		_, _ = w.Write(awsEventStreamFrame(t, "contextUsageEvent", map[string]interface{}{"contextUsagePercentage": contextPct[calls]}))
+		_, _ = w.Write(awsEventStreamFrame(t, "metadataEvent", map[string]interface{}{"stopReason": "end_turn"}))
+		calls++
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("ws-rounds")[:1]...)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "claude-sonnet-4.5", "max_tokens": 100,
+		"tools": []interface{}{
+			map[string]interface{}{"type": "web_search_20250305", "name": "web_search"},
+			map[string]interface{}{"name": "read_file", "description": "Read a file", "input_schema": map[string]interface{}{"type": "object"}},
+		},
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": strings.Repeat("Summarize the release notes below. ", 400)}},
+	})
+	rec := httptest.NewRecorder()
+	h.handleClaudeMessages(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body))))
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2 (search round + answer round)\n%s", calls, rec.Body.String())
+	}
+	var resp struct {
+		Usage struct {
+			Input    int `json:"input_tokens"`
+			Creation int `json:"cache_creation_input_tokens"`
+			Read     int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, rec.Body.String())
+	}
+	window := getContextWindowSize("claude-sonnet-4.5")
+	want := int(contextPct[0]*float64(window)/100) + int(contextPct[1]*float64(window)/100)
+	u := resp.Usage
+	if got := u.Input + u.Creation + u.Read; got != want {
+		t.Fatalf("billed input %d (in %d, write %d, read %d), want both rounds' context %d", got, u.Input, u.Creation, u.Read, want)
+	}
+	if u.Read == 0 {
+		t.Fatalf("round 2 must read the prefix round 1 cached, got read 0 (write %d)", u.Creation)
 	}
 }

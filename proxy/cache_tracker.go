@@ -100,6 +100,30 @@ func (u promptCacheUsage) split(total int) promptCacheSplit {
 	return out
 }
 
+// add sums splits of separate Kiro calls billed as one response.
+func (s *promptCacheSplit) add(o promptCacheSplit) {
+	s.Input += o.Input
+	s.Creation += o.Creation
+	s.Read += o.Read
+	s.Creation5m += o.Creation5m
+	s.Creation1h += o.Creation1h
+}
+
+func (s promptCacheSplit) total() int {
+	return s.Input + s.Creation + s.Read
+}
+
+// usage returns a usage already in reported units: its split(s.total())
+// gives s back.
+func (s promptCacheSplit) usage() promptCacheUsage {
+	return promptCacheUsage{
+		CacheCreationInputTokens:   s.Creation,
+		CacheReadInputTokens:       s.Read,
+		CacheCreation5mInputTokens: s.Creation5m,
+		CacheCreation1hInputTokens: s.Creation1h,
+	}
+}
+
 type promptCacheBreakpoint struct {
 	Fingerprint      [32]byte
 	CumulativeTokens int
