@@ -53,6 +53,11 @@ func (t *promptCacheTracker) BuildKiroProfile(payload *KiroPayload, model string
 		withoutTools := *ctx
 		withoutTools.Tools = nil
 		current.UserInputMessageContext = &withoutTools
+		// History entries carry no context at all when there are no tool
+		// results; an empty {} would never match the message once it moves there.
+		if len(withoutTools.ToolResults) == 0 {
+			current.UserInputMessageContext = nil
+		}
 	}
 	currentEntry := KiroHistoryMessage{UserInputMessage: &current}
 	currentTokens := kiroEntryTokens(currentEntry)

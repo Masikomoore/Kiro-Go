@@ -170,6 +170,26 @@ func TestKiroProfileCountsToolsOnce(t *testing.T) {
 	}
 }
 
+// A cache_control client's newest message is written as the last boundary.
+// With tools on the request, stripping them left an empty context {} that the
+// same message lacks once it moves into history, so the next turn never read
+// it back.
+func TestKiroProfileCurrentMessageMatchesItInHistory(t *testing.T) {
+	useCompat(t, config.CompatSettings{})
+	tracker := newPromptCacheTracker(time.Hour)
+	withTools := func(turns int) *KiroPayload {
+		p := kiroConversation(turns)
+		p.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext = &UserInputMessageContext{Tools: []KiroToolWrapper{{}}}
+		return p
+	}
+	first := tracker.BuildKiroProfile(withTools(3), "claude-sonnet-4.5", true)
+	tracker.Update("acct-1", first)
+	got := tracker.Compute("acct-1", tracker.BuildKiroProfile(withTools(4), "claude-sonnet-4.5", true))
+	if want := first.Breakpoints[len(first.Breakpoints)-1].CumulativeTokens; got.CacheReadInputTokens < want {
+		t.Fatalf("next turn read %d, want the whole previous prompt (%d) including its newest message", got.CacheReadInputTokens, want)
+	}
+}
+
 // Without cache_control the stream reports usage only in message_delta, so a
 // stream that fails after message_start is not billed downstream. Requests
 // with cache_control (Claude Code) keep their usage in message_start.
