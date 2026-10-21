@@ -3262,12 +3262,12 @@
 
         async function checkUpdate(manual) {
             try {
-                const res = await fetch('https://raw.githubusercontent.com/Quorinex/Kiro-Go/main/version.json?t=' + Date.now());
+                const res = await fetch('https://raw.githubusercontent.com/Masikomoore/Kiro-Go/main/version.json?t=' + Date.now());
                 if (!res.ok) throw new Error('Fetch failed');
                 const d = await res.json();
                 const latestVersion = (d.version || '').replace(/^v/, '');
                 if (latestVersion && latestVersion !== currentVersion && compareVersions(latestVersion, currentVersion) > 0) {
-                    showUpdateModal(latestVersion, d.download || 'https://github.com/Quorinex/Kiro-Go', d.changelog || '');
+                    showUpdateModal(latestVersion, d.download || 'https://github.com/Masikomoore/Kiro-Go', d.changelog || '');
                 } else if (manual) {
                     alert(t('update.upToDate') + ' (v' + currentVersion + ')');
                 }
