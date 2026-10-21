@@ -925,8 +925,16 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 	}
 	// contextUsageEvent is not a terminal signal: it can arrive before the
 	// answer finishes. A mid-frame death returns above and never reaches here.
-	if !sawStop && sawAnswer && sawMetering && callback.OnStopReason != nil {
-		callback.OnStopReason("end_turn")
+	if !sawStop && sawMetering && callback.OnStopReason != nil {
+		if sawAnswer {
+			callback.OnStopReason("end_turn")
+		} else {
+			// Kiro finished and billed a turn that produced reasoning only: the
+			// output ran out mid-thought, which Anthropic reports as max_tokens.
+			// Live (effort max): ~630 s, ~14.8 credits each, no answer; reported
+			// as a truncation, the client paid nothing and resent it.
+			callback.OnStopReason("max_tokens")
+		}
 	}
 	if callback.OnCredits != nil && totalCredits > 0 {
 		callback.OnCredits(totalCredits)

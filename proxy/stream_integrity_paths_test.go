@@ -6,6 +6,8 @@ import (
 	accountpool "kiro-go/pool"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -138,6 +140,45 @@ func TestClaudeStreamCompletesOnMeteringWithoutMetadata(t *testing.T) {
 	}
 	if hits.Load() != 1 {
 		t.Fatalf("finished turn must not be retried, hits=%d", hits.Load())
+	}
+}
+
+// Kiro ending a billed turn after reasoning only has run out of output: the
+// client must see max_tokens and be billed, not get a truncation error.
+func TestClaudeStreamReasoningOnlyMeteredTurnEndsAsMaxTokens(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "reasoningContentEvent", map[string]interface{}{
+			"text": strings.Repeat("weighing the options ", 200),
+		}))
+		_, _ = w.Write(awsEventStreamFrame(t, "contextUsageEvent", map[string]interface{}{
+			"contextUsagePercentage": 0.41,
+		}))
+		_, _ = w.Write(awsEventStreamFrame(t, "meteringEvent", map[string]interface{}{
+			"unit": "credit", "unitPlural": "credits", "usage": 14.8,
+		}))
+	}))
+	defer server.Close()
+	h := setupIntegrityPathTest(t, server)
+
+	body := postClaudeHello(t, h)
+	if strings.Contains(body, `"type":"error"`) {
+		t.Fatalf("a billed reasoning-only turn must not error, got %s", body)
+	}
+	if !strings.Contains(body, `"stop_reason":"max_tokens"`) || !strings.Contains(body, "event: message_stop") {
+		t.Fatalf("want stop_reason max_tokens and message_stop, got %s", body)
+	}
+	m := regexp.MustCompile(`"output_tokens":(\d+)`).FindAllStringSubmatch(body, -1)
+	if len(m) == 0 {
+		t.Fatalf("no output_tokens in %s", body)
+	}
+	if out, _ := strconv.Atoi(m[len(m)-1][1]); out < estimateApproxTokens(strings.Repeat("weighing the options ", 200)) {
+		t.Fatalf("the reasoning Kiro billed must be reported as output, got %d", out)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("a finished turn must not be retried, hits=%d", hits.Load())
 	}
 }
 
