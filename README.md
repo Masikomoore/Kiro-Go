@@ -156,6 +156,8 @@ For users in restricted network regions, configure an outbound proxy in the admi
 
 You can save several proxies by name and pick one as the global proxy. Accounts without their own proxy use the global one. An account's own proxy can be picked from the saved list in its detail panel.
 
+When adding an account, you can pick a saved proxy (or the global default) for all of its login and token requests; the choice is saved as that account's proxy.
+
 **Test** sends one request to the Kiro host (`q.us-east-1.amazonaws.com`) through the proxy and shows the latency. Any HTTP status counts as connected. Testing an empty field checks the direct route.
 
 The global proxy takes effect immediately without restarting.

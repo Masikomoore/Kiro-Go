@@ -62,12 +62,15 @@ type microsoftSSOSession struct {
 	ID          string
 	PortalState string
 	ProxyURL    string
-	ExpiresAt   time.Time
-	timer       *time.Timer
-	mu          sync.Mutex
-	canceled    atomic.Bool
-	stage       microsoftSSOStage
-	providerLeg *microsoftProviderLeg
+	// chosenProxyURL is the proxy the admin explicitly picked ("" = default).
+	// Only this value is copied onto the saved account.
+	chosenProxyURL string
+	ExpiresAt      time.Time
+	timer          *time.Timer
+	mu             sync.Mutex
+	canceled       atomic.Bool
+	stage          microsoftSSOStage
+	providerLeg    *microsoftProviderLeg
 }
 
 // MicrosoftSSOResult is the credential produced after the second callback.
@@ -83,6 +86,9 @@ type MicrosoftSSOResult struct {
 	Email         string
 	UserID        string
 	ExpiresAt     int64
+	// ProxyURL is the proxy explicitly chosen at login start, or "" when the
+	// global default applied. Callers store only this on the account.
+	ProxyURL string
 }
 
 // MicrosoftSSOProgress represents either the authorization URL for the second
@@ -97,12 +103,13 @@ var (
 	microsoftSSOSessionsMu sync.Mutex
 )
 
-// StartMicrosoftSSOLogin creates the Kiro portal request. No socket or callback
-// server is opened. The portal leg only returns an external-IdP descriptor on
+// StartMicrosoftSSOLogin creates the Kiro portal request. proxyURL selects the
+// outbound proxy for every leg; an empty value falls back to config.GetProxyURL().
+// No socket or callback server is opened. The portal leg only returns an external-IdP descriptor on
 // the fixed localhost callback; it is not an OAuth code exchange for this
 // proxy, so no PKCE verifier is retained server-side. Microsoft's second leg
 // still uses a stored PKCE verifier.
-func StartMicrosoftSSOLogin() (sessionID, authorizationURL string, expiresIn int, err error) {
+func StartMicrosoftSSOLogin(proxyURL string) (sessionID, authorizationURL string, expiresIn int, err error) {
 	// code_challenge is still sent because Kiro's hosted sign-in URL expects the
 	// same query shape as other clients. There is no later code_verifier check
 	// for this portal leg.
@@ -115,13 +122,20 @@ func StartMicrosoftSSOLogin() (sessionID, authorizationURL string, expiresIn int
 		return "", "", 0, fmt.Errorf("generate OAuth state: %w", err)
 	}
 
+	chosenProxyURL := strings.TrimSpace(proxyURL)
+	effectiveProxyURL := chosenProxyURL
+	if effectiveProxyURL == "" {
+		effectiveProxyURL = config.GetProxyURL()
+	}
+
 	now := time.Now()
 	session := &microsoftSSOSession{
-		ID:          uuid.NewString(),
-		PortalState: state,
-		ProxyURL:    config.GetProxyURL(),
-		ExpiresAt:   now.Add(microsoftSSOSessionTTL),
-		stage:       microsoftSSOWaitingForPortal,
+		ID:             uuid.NewString(),
+		PortalState:    state,
+		ProxyURL:       effectiveProxyURL,
+		chosenProxyURL: chosenProxyURL,
+		ExpiresAt:      now.Add(microsoftSSOSessionTTL),
+		stage:          microsoftSSOWaitingForPortal,
 	}
 
 	microsoftSSOSessionsMu.Lock()
@@ -366,6 +380,7 @@ func continueMicrosoftProviderLeg(session *microsoftSSOSession, rawURL string) (
 		Email:         metadata.Email,
 		UserID:        userID,
 		ExpiresAt:     time.Now().Unix() + int64(token.ExpiresIn),
+		ProxyURL:      session.chosenProxyURL,
 	}
 	retireMicrosoftSSOSessionLocked(session)
 	return &MicrosoftSSOProgress{Result: result}, nil
@@ -974,6 +989,7 @@ func retireMicrosoftSSOSessionLocked(session *microsoftSSOSession) {
 func clearMicrosoftSSOSessionLocked(session *microsoftSSOSession) {
 	session.PortalState = ""
 	session.ProxyURL = ""
+	session.chosenProxyURL = ""
 	session.providerLeg = nil
 }
 

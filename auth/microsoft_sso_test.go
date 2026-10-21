@@ -28,7 +28,7 @@ func (fn microsoftRoundTripFunc) RoundTrip(request *http.Request) (*http.Respons
 func TestStartMicrosoftSSOLoginBuildsManualPortalRequestAndCancel(t *testing.T) {
 	resetMicrosoftSSOSessionsForTest(t)
 
-	sessionID, authorizationURL, expiresIn, err := StartMicrosoftSSOLogin()
+	sessionID, authorizationURL, expiresIn, err := StartMicrosoftSSOLogin("")
 	if err != nil {
 		t.Fatalf("StartMicrosoftSSOLogin() error = %v", err)
 	}
@@ -145,7 +145,7 @@ func TestMicrosoftSSOTwoStageManualCallback(t *testing.T) {
 	})}
 	restoreMicrosoftAuthClient(t, client)
 
-	sessionID, _, _, err := StartMicrosoftSSOLogin()
+	sessionID, _, _, err := StartMicrosoftSSOLogin("")
 	if err != nil {
 		t.Fatalf("StartMicrosoftSSOLogin() error = %v", err)
 	}
@@ -249,7 +249,7 @@ func TestMicrosoftSSOCallbackValidationCanBeRetried(t *testing.T) {
 	})}
 	restoreMicrosoftAuthClient(t, client)
 
-	sessionID, _, _, err := StartMicrosoftSSOLogin()
+	sessionID, _, _, err := StartMicrosoftSSOLogin("")
 	if err != nil {
 		t.Fatalf("StartMicrosoftSSOLogin() error = %v", err)
 	}
@@ -354,7 +354,7 @@ func TestMicrosoftSSOCallbackValidationCanBeRetried(t *testing.T) {
 func TestMicrosoftSSOSessionExpiry(t *testing.T) {
 	resetMicrosoftSSOSessionsForTest(t)
 
-	sessionID, _, _, err := StartMicrosoftSSOLogin()
+	sessionID, _, _, err := StartMicrosoftSSOLogin("")
 	if err != nil {
 		t.Fatalf("StartMicrosoftSSOLogin() error = %v", err)
 	}
@@ -387,7 +387,7 @@ func TestCancelMicrosoftSSODoesNotWaitForInFlightDiscovery(t *testing.T) {
 	})}
 	restoreMicrosoftAuthClient(t, client)
 
-	sessionID, _, _, err := StartMicrosoftSSOLogin()
+	sessionID, _, _, err := StartMicrosoftSSOLogin("")
 	if err != nil {
 		t.Fatalf("StartMicrosoftSSOLogin() error = %v", err)
 	}

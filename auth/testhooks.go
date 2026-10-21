@@ -28,3 +28,18 @@ func SetGlobalAuthClientForTest(c *http.Client) *http.Client {
 	}
 	return old
 }
+
+// SetAuthProxyClientForTest installs c as the cached auth client for a non-empty
+// proxyURL, so GetAuthClientForProxy(proxyURL) returns it without dialing a
+// real proxy. Returns a restore func. Test-only.
+func SetAuthProxyClientForTest(proxyURL string, c *http.Client) func() {
+	prev, had := authProxyClientCache.Load(proxyURL)
+	authProxyClientCache.Store(proxyURL, c)
+	return func() {
+		if had {
+			authProxyClientCache.Store(proxyURL, prev)
+		} else {
+			authProxyClientCache.Delete(proxyURL)
+		}
+	}
+}

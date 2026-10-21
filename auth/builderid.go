@@ -21,6 +21,9 @@ type BuilderIdSession struct {
 	Interval        int
 	ExpiresAt       time.Time
 	Region          string
+	// ProxyURL is the outbound proxy chosen when the login started. Every later
+	// step of this session (token polling) uses it. Empty means the global client.
+	ProxyURL string
 }
 
 var (
@@ -28,8 +31,8 @@ var (
 	builderIdMu       sync.RWMutex
 )
 
-// StartBuilderIdLogin 开始 Builder ID 登录
-func StartBuilderIdLogin(region string) (*BuilderIdSession, error) {
+// StartBuilderIdLogin 开始 Builder ID 登录。proxyURL 为空时使用全局 auth 客户端。
+func StartBuilderIdLogin(region, proxyURL string) (*BuilderIdSession, error) {
 	if region == "" {
 		region = "us-east-1"
 	}
@@ -57,7 +60,7 @@ func StartBuilderIdLogin(region string) (*BuilderIdSession, error) {
 	regReq, _ := http.NewRequest("POST", oidcBase+"/client/register", bytes.NewReader(regBody))
 	regReq.Header.Set("Content-Type", "application/json")
 
-	client := httpClient()
+	client := GetAuthClientForProxy(proxyURL)
 	regResp, err := client.Do(regReq)
 	if err != nil {
 		return nil, fmt.Errorf("register client failed: %v", err)
@@ -133,6 +136,7 @@ func StartBuilderIdLogin(region string) (*BuilderIdSession, error) {
 		Interval:        authResult.Interval,
 		ExpiresAt:       time.Now().Add(time.Duration(authResult.ExpiresIn) * time.Second),
 		Region:          region,
+		ProxyURL:        proxyURL,
 	}
 
 	builderIdMu.Lock()
@@ -175,7 +179,7 @@ func PollBuilderIdAuth(sessionID string) (accessToken, refreshToken, clientID, c
 	tokenReq, _ := http.NewRequest("POST", oidcBase+"/token", bytes.NewReader(tokenBody))
 	tokenReq.Header.Set("Content-Type", "application/json")
 
-	client := httpClient()
+	client := GetAuthClientForProxy(session.ProxyURL)
 	tokenResp, err := client.Do(tokenReq)
 	if err != nil {
 		return "", "", "", "", "", 0, "", fmt.Errorf("token request failed: %v", err)
@@ -233,6 +237,15 @@ func PollBuilderIdAuth(sessionID string) (accessToken, refreshToken, clientID, c
 	}
 
 	return "", "", "", "", "", 0, "", fmt.Errorf("unexpected response: %d", tokenResp.StatusCode)
+}
+
+// BuilderIdSessionProxyURL returns the proxy chosen for a Builder ID session, or
+// "" if the session is unknown or used the global client.
+func BuilderIdSessionProxyURL(sessionID string) string {
+	if s := GetBuilderIdSession(sessionID); s != nil {
+		return s.ProxyURL
+	}
+	return ""
 }
 
 // GetBuilderIdSession 获取会话信息

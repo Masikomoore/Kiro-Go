@@ -24,7 +24,10 @@ type IamSsoSession struct {
 	Region       string
 	StartUrl     string
 	RedirectUri  string
-	ExpiresAt    time.Time
+	// ProxyURL is the outbound proxy chosen when the login started; the token
+	// exchange in CompleteIamSsoLogin uses it. Empty means the global client.
+	ProxyURL  string
+	ExpiresAt time.Time
 }
 
 var (
@@ -40,8 +43,8 @@ var scopes = []string{
 	"codewhisperer:taskassist",
 }
 
-// StartIamSsoLogin 发起 IAM SSO 登录
-func StartIamSsoLogin(startUrl, region string) (sessionID, authorizeUrl string, expiresIn int, err error) {
+// StartIamSsoLogin 发起 IAM SSO 登录。proxyURL 为空时使用全局 auth 客户端。
+func StartIamSsoLogin(startUrl, region, proxyURL string) (sessionID, authorizeUrl string, expiresIn int, err error) {
 	if region == "" {
 		region = "us-east-1"
 	}
@@ -50,7 +53,8 @@ func StartIamSsoLogin(startUrl, region string) (sessionID, authorizeUrl string, 
 	redirectUri := "http://127.0.0.1/oauth/callback"
 
 	// 1. 注册 OIDC 客户端
-	clientID, clientSecret, err := registerOIDCClient(oidcBase, startUrl, redirectUri)
+	client := GetAuthClientForProxy(proxyURL)
+	clientID, clientSecret, err := registerOIDCClient(client, oidcBase, startUrl, redirectUri)
 	if err != nil {
 		return "", "", 0, fmt.Errorf("注册客户端失败: %w", err)
 	}
@@ -82,6 +86,7 @@ func StartIamSsoLogin(startUrl, region string) (sessionID, authorizeUrl string, 
 		Region:       region,
 		StartUrl:     startUrl,
 		RedirectUri:  redirectUri,
+		ProxyURL:     proxyURL,
 		ExpiresAt:    time.Now().Add(10 * time.Minute),
 	}
 
@@ -93,6 +98,17 @@ func StartIamSsoLogin(startUrl, region string) (sessionID, authorizeUrl string, 
 	go cleanupExpiredSessions()
 
 	return sessionID, authorizeUrl, 600, nil
+}
+
+// IamSsoSessionProxyURL returns the proxy chosen for an IAM SSO session, or ""
+// if the session is unknown or used the global client.
+func IamSsoSessionProxyURL(sessionID string) string {
+	sessionsMu.RLock()
+	defer sessionsMu.RUnlock()
+	if s, ok := sessions[sessionID]; ok {
+		return s.ProxyURL
+	}
+	return ""
 }
 
 // CompleteIamSsoLogin 完成 IAM SSO 登录
@@ -137,6 +153,7 @@ func CompleteIamSsoLogin(sessionID, callbackUrl string) (accessToken, refreshTok
 	// 用 code 换取 token
 	oidcBase := fmt.Sprintf("https://oidc.%s.amazonaws.com", session.Region)
 	accessToken, refreshToken, expiresIn, err = exchangeToken(
+		GetAuthClientForProxy(session.ProxyURL),
 		oidcBase,
 		session.ClientID,
 		session.ClientSecret,
@@ -156,7 +173,7 @@ func CompleteIamSsoLogin(sessionID, callbackUrl string) (accessToken, refreshTok
 	return accessToken, refreshToken, session.ClientID, session.ClientSecret, session.Region, expiresIn, nil
 }
 
-func registerOIDCClient(oidcBase, startUrl, redirectUri string) (clientID, clientSecret string, err error) {
+func registerOIDCClient(client *http.Client, oidcBase, startUrl, redirectUri string) (clientID, clientSecret string, err error) {
 	payload := map[string]interface{}{
 		"clientName":   "Kiro",
 		"clientType":   "public",
@@ -170,7 +187,7 @@ func registerOIDCClient(oidcBase, startUrl, redirectUri string) (clientID, clien
 	req, _ := http.NewRequest("POST", oidcBase+"/client/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := httpClient().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -193,7 +210,7 @@ func registerOIDCClient(oidcBase, startUrl, redirectUri string) (clientID, clien
 	return result.ClientID, result.ClientSecret, nil
 }
 
-func exchangeToken(oidcBase, clientID, clientSecret, code, codeVerifier, redirectUri string) (accessToken, refreshToken string, expiresIn int, err error) {
+func exchangeToken(client *http.Client, oidcBase, clientID, clientSecret, code, codeVerifier, redirectUri string) (accessToken, refreshToken string, expiresIn int, err error) {
 	payload := map[string]string{
 		"clientId":     clientID,
 		"clientSecret": clientSecret,
@@ -207,7 +224,7 @@ func exchangeToken(oidcBase, clientID, clientSecret, code, codeVerifier, redirec
 	req, _ := http.NewRequest("POST", oidcBase+"/token", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := httpClient().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", 0, err
 	}

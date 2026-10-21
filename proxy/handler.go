@@ -3026,6 +3026,7 @@ func (h *Handler) apiStartIamSso(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		StartUrl string `json:"startUrl"`
 		Region   string `json:"region"`
+		ProxyURL string `json:"proxyURL"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3039,7 +3040,14 @@ func (h *Handler) apiStartIamSso(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID, authorizeUrl, expiresIn, err := auth.StartIamSsoLogin(req.StartUrl, req.Region)
+	proxyURL, err := parseAddAccountProxyURL(req.ProxyURL)
+	if err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	sessionID, authorizeUrl, expiresIn, err := auth.StartIamSsoLogin(req.StartUrl, req.Region, proxyURL)
 	if err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -3064,6 +3072,7 @@ func (h *Handler) apiCompleteIamSso(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	proxyURL := auth.IamSsoSessionProxyURL(req.SessionID)
 	accessToken, refreshToken, clientID, clientSecret, region, expiresIn, err := auth.CompleteIamSsoLogin(req.SessionID, req.CallbackUrl)
 	if err != nil {
 		w.WriteHeader(400)
@@ -3072,7 +3081,7 @@ func (h *Handler) apiCompleteIamSso(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 获取用户信息
-	email, _, _ := auth.GetUserInfo(accessToken)
+	email, _, _ := auth.GetUserInfo(accessToken, proxyURL)
 
 	// 创建账号
 	account := config.Account{
@@ -3087,6 +3096,7 @@ func (h *Handler) apiCompleteIamSso(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:    time.Now().Unix() + int64(expiresIn),
 		Enabled:      true,
 		MachineId:    config.GenerateMachineId(),
+		ProxyURL:     proxyURL,
 	}
 
 	if err := config.AddAccount(account); err != nil {
@@ -3106,7 +3116,24 @@ func (h *Handler) apiCompleteIamSso(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) apiStartMicrosoftSSO(w http.ResponseWriter, r *http.Request) {
-	sessionID, authorizeURL, expiresIn, err := auth.StartMicrosoftSSOLogin()
+	var req struct {
+		ProxyURL string `json:"proxyURL"`
+	}
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+			return
+		}
+	}
+	proxyURL, err := parseAddAccountProxyURL(req.ProxyURL)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	sessionID, authorizeURL, expiresIn, err := auth.StartMicrosoftSSOLogin(proxyURL)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -3179,6 +3206,7 @@ func (h *Handler) apiCompleteMicrosoftSSO(w http.ResponseWriter, r *http.Request
 		TokenEndpoint: result.TokenEndpoint,
 		IssuerURL:     result.IssuerURL,
 		Scopes:        result.Scopes,
+		ProxyURL:      result.ProxyURL,
 	}
 
 	discoveryContext, discovery, ok := h.beginMicrosoftProfileDiscovery(r.Context(), req.SessionID)
@@ -3604,13 +3632,31 @@ func (h *Handler) writeAddAccountError(w http.ResponseWriter, err error, rotated
 	json.NewEncoder(w).Encode(payload)
 }
 
+// parseAddAccountProxyURL reads the proxy picked in the add-account dialog.
+// Empty means "global proxy" and is stored on the account as an empty ProxyURL.
+func parseAddAccountProxyURL(raw string) (string, error) {
+	proxyURL := strings.TrimSpace(raw)
+	if err := validateProxyURL(proxyURL); err != nil {
+		return "", err
+	}
+	return proxyURL, nil
+}
+
 func (h *Handler) apiStartBuilderIdLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Region string `json:"region"`
+		Region   string `json:"region"`
+		ProxyURL string `json:"proxyURL"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	session, err := auth.StartBuilderIdLogin(req.Region)
+	proxyURL, err := parseAddAccountProxyURL(req.ProxyURL)
+	if err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	session, err := auth.StartBuilderIdLogin(req.Region, proxyURL)
 	if err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -3635,6 +3681,7 @@ func (h *Handler) apiPollBuilderIdAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	proxyURL := auth.BuilderIdSessionProxyURL(req.SessionID)
 	accessToken, refreshToken, clientID, clientSecret, region, expiresIn, status, err := auth.PollBuilderIdAuth(req.SessionID)
 	if err != nil {
 		w.WriteHeader(400)
@@ -3661,7 +3708,7 @@ func (h *Handler) apiPollBuilderIdAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 授权完成，获取用户信息
-	email, _, _ := auth.GetUserInfo(accessToken)
+	email, _, _ := auth.GetUserInfo(accessToken, proxyURL)
 
 	// 创建账号
 	account := config.Account{
@@ -3677,6 +3724,7 @@ func (h *Handler) apiPollBuilderIdAuth(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:    time.Now().Unix() + int64(expiresIn),
 		Enabled:      true,
 		MachineId:    config.GenerateMachineId(),
+		ProxyURL:     proxyURL,
 	}
 
 	if err := config.AddAccount(account); err != nil {
@@ -3700,6 +3748,7 @@ func (h *Handler) apiImportSsoToken(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		BearerToken string `json:"bearerToken"`
 		Region      string `json:"region"`
+		ProxyURL    string `json:"proxyURL"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3710,6 +3759,13 @@ func (h *Handler) apiImportSsoToken(w http.ResponseWriter, r *http.Request) {
 	if req.BearerToken == "" {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]string{"error": "bearerToken is required"})
+		return
+	}
+
+	proxyURL, err := parseAddAccountProxyURL(req.ProxyURL)
+	if err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -3724,14 +3780,14 @@ func (h *Handler) apiImportSsoToken(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		accessToken, refreshToken, clientID, clientSecret, expiresIn, err := auth.ImportFromSsoToken(token, req.Region)
+		accessToken, refreshToken, clientID, clientSecret, expiresIn, err := auth.ImportFromSsoToken(token, req.Region, proxyURL)
 		if err != nil {
 			errors = append(errors, err.Error())
 			continue
 		}
 
 		// 获取用户信息
-		email, _, _ := auth.GetUserInfo(accessToken)
+		email, _, _ := auth.GetUserInfo(accessToken, proxyURL)
 
 		// 创建账号
 		account := config.Account{
@@ -3746,6 +3802,7 @@ func (h *Handler) apiImportSsoToken(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:    time.Now().Unix() + int64(expiresIn),
 			Enabled:      true,
 			MachineId:    config.GenerateMachineId(),
+			ProxyURL:     proxyURL,
 		}
 
 		if err := config.AddAccount(account); err != nil {
@@ -3795,11 +3852,18 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		TokenEndpoint string `json:"tokenEndpoint"`
 		IssuerURL     string `json:"issuerUrl"`
 		Scopes        string `json:"scopes"`
+		ProxyURL      string `json:"proxyURL"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	proxyURL, err := parseAddAccountProxyURL(req.ProxyURL)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -3855,6 +3919,7 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 			Provider:   strings.TrimSpace(req.Provider),
 			Region:     strings.TrimSpace(req.Region),
 			Enabled:    true,
+			ProxyURL:   proxyURL,
 		}
 		if err := config.NormalizeAPIKeyAccount(&account); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -4008,6 +4073,7 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		TokenEndpoint: req.TokenEndpoint,
 		IssuerURL:     req.IssuerURL,
 		Scopes:        req.Scopes,
+		ProxyURL:      proxyURL,
 	}
 	accessToken, newRefreshToken, expiresAt, newProfileArn, err := auth.RefreshToken(tempAccount)
 	if err != nil {
@@ -4034,7 +4100,7 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		if tokenUserID != "" {
 			userID = tokenUserID
 		}
-	} else if tokenEmail, _, _ := auth.GetUserInfo(accessToken); tokenEmail != "" {
+	} else if tokenEmail, _, _ := auth.GetUserInfo(accessToken, proxyURL); tokenEmail != "" {
 		email = tokenEmail
 	}
 
@@ -4097,6 +4163,7 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		TokenEndpoint:           req.TokenEndpoint,
 		IssuerURL:               req.IssuerURL,
 		Scopes:                  req.Scopes,
+		ProxyURL:                proxyURL,
 	}
 
 	if err := config.AddAccount(account); err != nil {

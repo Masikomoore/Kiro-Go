@@ -2265,9 +2265,30 @@
     if (builderIdPollTimer) { clearTimeout(builderIdPollTimer); builderIdPollTimer = null; }
     builderIdSession = '';
   }
+  // Outbound proxy picked in the add dialog; applies to every add method and is
+  // kept while the dialog moves between steps. '' = global proxy.
+  let addAccountProxy = '';
+  function addAccountProxyURL() {
+    const sel = $('addProxySelect');
+    if (sel) addAccountProxy = sel.value;
+    return addAccountProxy;
+  }
+  async function openAddAccountModal() {
+    addAccountProxy = '';
+    if (!savedProxies.length) await loadProxyConfig().catch(() => {});
+    showModal('add');
+  }
+  function addProxySelectHTML() {
+    let opts = '<option value="">' + escapeHtml(t('modal.proxyDefault')) + '</option>';
+    opts += savedProxies.map(p => '<option value="' + escapeAttr(p.url) + '">' + escapeHtml(p.name + ' — ' + maskProxyURL(p.url)) + '</option>').join('');
+    return '<div class="form-group"><label for="addProxySelect">' + escapeHtml(t('modal.proxyLabel')) + '</label>' +
+      '<select id="addProxySelect">' + opts + '</select>' +
+      '<small>' + escapeHtml(t('modal.proxyHint')) + '</small></div>';
+  }
   function modalAdd(title, body) {
     title.textContent = t('modal.addAccount');
-    body.innerHTML =
+    if (!savedProxies.some(p => p.url === addAccountProxy)) addAccountProxy = '';
+    body.innerHTML = addProxySelectHTML() +
       '<div class="method-list">' +
       methodCard('builderid', t('modal.builderIdTitle'), t('modal.builderIdDesc')) +
       methodCard('iam', t('modal.iamTitle'), t('modal.iamDesc')) +
@@ -2279,6 +2300,9 @@
       methodCard('apikey', t('modal.apiKeyTitle'), t('modal.apiKeyDesc')) +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" data-close-add="1" type="button">' + escapeHtml(t('common.cancel')) + '</button></div>';
+    const proxySelect = $('addProxySelect');
+    proxySelect.value = addAccountProxy;
+    proxySelect.addEventListener('change', e => { addAccountProxy = e.target.value; });
   }
   function modalBuilderId(title, body) {
     title.textContent = t('modal.builderIdTitle');
@@ -2560,7 +2584,8 @@
       kiroApiKey: key,
       authMethod: 'api_key',
       region,
-      nickname
+      nickname,
+      proxyURL: addAccountProxyURL()
     };
     try {
       const res = await api('/auth/credentials', { method: 'POST', body: JSON.stringify(payload) });
@@ -2597,7 +2622,8 @@
       clientId: clientData?.clientId || '',
       clientSecret: clientData?.clientSecret || '',
       region: tokenData.region || '',
-      authMethod, provider
+      authMethod, provider,
+      proxyURL: addAccountProxyURL()
     };
     const res = await api('/auth/credentials', { method: 'POST', body: JSON.stringify(payload) });
     const d = await res.json();
@@ -2650,7 +2676,8 @@
           kiroApiKey: kiroApiKey || item.accessToken || '',
           authMethod: 'api_key',
           provider: rawProvider || 'APIKey',
-          region: item.region || 'us-east-1'
+          region: item.region || 'us-east-1',
+          proxyURL: addAccountProxyURL()
         };
         try {
           const res = await api('/auth/credentials', { method: 'POST', body: JSON.stringify(payload) });
@@ -2690,7 +2717,8 @@
         region: item.region || (isExternalIdp ? '' : 'us-east-1'),
         tokenEndpoint: item.tokenEndpoint || '',
         issuerUrl: item.issuerUrl || '',
-        scopes: item.scopes || ''
+        scopes: item.scopes || '',
+        proxyURL: addAccountProxyURL()
       };
       try {
         const res = await api('/auth/credentials', { method: 'POST', body: JSON.stringify(payload) });
@@ -2762,7 +2790,7 @@
     const refreshToken = $('cookieRefreshToken').value.trim();
     if (!refreshToken) return toastWarning(t('cookie.refreshTokenMissing'));
     const provider = $('cookieProvider').value;
-    const payload = { refreshToken, accessToken: '', clientId: '', clientSecret: '', authMethod: 'social', provider };
+    const payload = { refreshToken, accessToken: '', clientId: '', clientSecret: '', authMethod: 'social', provider, proxyURL: addAccountProxyURL() };
     const res = await api('/auth/credentials', { method: 'POST', body: JSON.stringify(payload) });
     const d = await res.json();
     if (d.success) {
@@ -2775,7 +2803,8 @@
     const res = await api('/auth/sso-token', {
       method: 'POST', body: JSON.stringify({
         bearerToken: $('ssoToken').value,
-        region: $('ssoRegion').value
+        region: $('ssoRegion').value,
+        proxyURL: addAccountProxyURL()
       })
     });
     const d = await res.json();
@@ -2791,7 +2820,7 @@
   }
   async function startBuilderIdLogin() {
     const region = $('builderIdRegion').value || 'us-east-1';
-    const res = await api('/auth/builderid/start', { method: 'POST', body: JSON.stringify({ region }) });
+    const res = await api('/auth/builderid/start', { method: 'POST', body: JSON.stringify({ region, proxyURL: addAccountProxyURL() }) });
     const d = await res.json();
     if (d.sessionId) {
       builderIdSession = d.sessionId;
@@ -2846,7 +2875,8 @@
     } else {
       const res = await api('/auth/iam-sso/start', {
         method: 'POST', body: JSON.stringify({
-          startUrl: $('iamStartUrl').value, region: $('iamRegion').value
+          startUrl: $('iamStartUrl').value, region: $('iamRegion').value,
+          proxyURL: addAccountProxyURL()
         })
       });
       const d = await res.json();
@@ -2911,7 +2941,7 @@
     try {
       const res = await api('/auth/microsoft-sso/start', {
         method: 'POST',
-        body: JSON.stringify({})
+        body: JSON.stringify({ proxyURL: addAccountProxyURL() })
       });
       const d = await res.json().catch(() => ({}));
       if (generation !== microsoftGeneration) {
@@ -3351,7 +3381,7 @@
 
     $('exportBtn').addEventListener('click', showExportModal);
     $('refreshAllModelsBtn').addEventListener('click', refreshAllModels);
-    $('addAccountBtn').addEventListener('click', () => showModal('add'));
+    $('addAccountBtn').addEventListener('click', openAddAccountModal);
 
     $('selectAllCheckbox').addEventListener('change', e => toggleSelectAll(e.target.checked));
     qsa('[data-batch]').forEach(b => b.addEventListener('click', () => {
