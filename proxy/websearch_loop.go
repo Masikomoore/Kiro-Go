@@ -195,6 +195,7 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 		var credits float64
 		var realInputTokens int
 		var stopOverride string
+		var upstreamStopReason string
 
 		callback := &KiroStreamCallback{
 			OnText: func(t string, isThinking bool) {
@@ -220,6 +221,9 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 					stopOverride = "model_context_window_exceeded"
 				}
 			},
+			OnStopReason: func(reason string) {
+				upstreamStopReason = reason
+			},
 			OnError: func(err error) {
 				if err != nil {
 					lastErr = err
@@ -227,7 +231,22 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 			},
 		}
 
-		err := CallKiroAPIContext(ctx, account, payload, callback)
+		measure := func() (int, int, string, bool) {
+			return len(text), len(toolUses), upstreamStopReason, thinkingText != ""
+		}
+		reset := func() {
+			text, thinkingText = "", ""
+			toolUses = nil
+			inputTokens, realInputTokens = 0, 0
+			credits = 0
+			stopOverride, upstreamStopReason = "", ""
+		}
+
+		// Like the plain paths: a round with no stop reason and no tool call
+		// (live: reasoning only, no meteringEvent) is a truncation, retried on
+		// the same account, never returned as a finished turn. Rounds are fully
+		// buffered, so a retry cannot duplicate output.
+		err := runKiroWithIntegrityRetry(ctx, account, payload, callback, measure, reset, nil)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, account, ctx.Err()
@@ -250,6 +269,9 @@ func (h *Handler) callUpstreamForWebSearch(ctx context.Context, req *ClaudeReque
 			inputTokens = realInputTokens
 		} else if inputTokens <= 0 {
 			inputTokens = estimatedInputTokens
+		}
+		if stopOverride == "" && upstreamStopReason == "max_tokens" {
+			stopOverride = "max_tokens"
 		}
 
 		cache := promptCacheSplit{Input: inputTokens}

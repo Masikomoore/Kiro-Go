@@ -801,3 +801,60 @@ func TestWebSearchLoopBillsInputPerRound(t *testing.T) {
 		t.Fatalf("round 2 must read the prefix round 1 cached, got read 0 (write %d)", u.Creation)
 	}
 }
+
+// A web_search loop round that streams reasoning only, with no stop reason and
+// no meteringEvent, is a truncation (live: returned to a third-party client as
+// an empty finished turn and billed while Kiro charged nothing). It must be
+// retried, and never shipped as a success.
+func TestWebSearchLoopRetriesReasoningOnlyRound(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "reasoningContentEvent", map[string]interface{}{"text": "thinking about it"}))
+		if calls == 1 {
+			return // stream ends with reasoning only
+		}
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "the answer"}))
+		_, _ = w.Write(awsEventStreamFrame(t, "metadataEvent", map[string]interface{}{"stopReason": "end_turn"}))
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("ws-trunc")[:1]...)
+
+	rec := httptest.NewRecorder()
+	h.handleClaudeMessages(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(webSearchLoopTestBody(t))))
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2 (truncated round retried)\n%s", calls, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "the answer") {
+		t.Fatalf("the retried answer must reach the client, got %s", rec.Body.String())
+	}
+}
+
+func TestWebSearchLoopFailsWhenEveryRoundIsReasoningOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "reasoningContentEvent", map[string]interface{}{"text": "thinking about it"}))
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("ws-trunc-all")[:1]...)
+
+	rec := httptest.NewRecorder()
+	h.handleClaudeMessages(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(webSearchLoopTestBody(t))))
+	if rec.Code == http.StatusOK && !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Fatalf("a reasoning-only round must not be returned as a finished turn, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func webSearchLoopTestBody(t *testing.T) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "claude-sonnet-4.5", "max_tokens": 100,
+		"tools": []interface{}{
+			map[string]interface{}{"type": "web_search_20250305", "name": "web_search"},
+			map[string]interface{}{"name": "read_file", "description": "Read a file", "input_schema": map[string]interface{}{"type": "object"}},
+		},
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "What changed?"}},
+	})
+	return string(body)
+}
