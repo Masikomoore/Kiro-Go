@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -700,6 +701,18 @@ func AccountIDExists(id string) bool {
 }
 
 func AddAccount(account Account) error {
+	return addAccount(account, false)
+}
+
+// AddAccountFirstInGroup adds an account from the admin add flows. Without an
+// explicit priority it goes first in its egress group (same proxyURL), and the
+// group is renumbered 2..n in its current order, matching the admin drag
+// order. Groups do not compete: each group's first account has priority 1.
+func AddAccountFirstInGroup(account Account) error {
+	return addAccount(account, true)
+}
+
+func addAccount(account Account, firstInGroup bool) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	if IsAPIKeyAccount(&account) {
@@ -732,9 +745,30 @@ func AddAccount(account Account) error {
 			}
 		}
 	}
+	var restore []int
+	if firstInGroup && account.Priority == 0 {
+		restore = make([]int, len(cfg.Accounts))
+		group := make([]int, 0)
+		for i := range cfg.Accounts {
+			restore[i] = cfg.Accounts[i].Priority
+			if strings.TrimSpace(cfg.Accounts[i].ProxyURL) == strings.TrimSpace(account.ProxyURL) {
+				group = append(group, i)
+			}
+		}
+		sort.SliceStable(group, func(a, b int) bool {
+			return cfg.Accounts[group[a]].Priority < cfg.Accounts[group[b]].Priority
+		})
+		for rank, i := range group {
+			cfg.Accounts[i].Priority = rank + 2
+		}
+		account.Priority = 1
+	}
 	cfg.Accounts = append(cfg.Accounts, account)
 	if err := Save(); err != nil {
 		cfg.Accounts = cfg.Accounts[:len(cfg.Accounts)-1]
+		for i, p := range restore {
+			cfg.Accounts[i].Priority = p
+		}
 		return err
 	}
 	return nil

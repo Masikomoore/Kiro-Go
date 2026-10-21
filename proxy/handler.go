@@ -2746,7 +2746,7 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 		account.Region = "us-east-1"
 	}
 
-	if err := config.AddAccount(account); err != nil {
+	if err := config.AddAccountFirstInGroup(account); err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -3131,7 +3131,7 @@ func (h *Handler) apiCompleteIamSso(w http.ResponseWriter, r *http.Request) {
 		ProxyURL:     proxyURL,
 	}
 
-	if err := config.AddAccount(account); err != nil {
+	if err := config.AddAccountFirstInGroup(account); err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -3287,7 +3287,7 @@ func (h *Handler) apiCompleteMicrosoftSSO(w http.ResponseWriter, r *http.Request
 	if len(profiles) == 1 {
 		account.ProfileArn = profiles[0].ARN
 	}
-	if err := config.AddAccount(account); err != nil {
+	if err := config.AddAccountFirstInGroup(account); err != nil {
 		h.microsoftFlowMu.Unlock()
 		h.writeAddAccountError(w, err)
 		return
@@ -3366,7 +3366,7 @@ func (h *Handler) apiSelectMicrosoftSSOProfile(w http.ResponseWriter, r *http.Re
 		h.writeMicrosoftSSOCanceled(w)
 		return
 	}
-	if err := config.AddAccount(account); err != nil {
+	if err := config.AddAccountFirstInGroup(account); err != nil {
 		h.microsoftFlowMu.Unlock()
 		selection.mu.Unlock()
 		h.writeAddAccountError(w, err)
@@ -3759,7 +3759,7 @@ func (h *Handler) apiPollBuilderIdAuth(w http.ResponseWriter, r *http.Request) {
 		ProxyURL:     proxyURL,
 	}
 
-	if err := config.AddAccount(account); err != nil {
+	if err := config.AddAccountFirstInGroup(account); err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -3837,7 +3837,7 @@ func (h *Handler) apiImportSsoToken(w http.ResponseWriter, r *http.Request) {
 			ProxyURL:     proxyURL,
 		}
 
-		if err := config.AddAccount(account); err != nil {
+		if err := config.AddAccountFirstInGroup(account); err != nil {
 			errors = append(errors, err.Error())
 			continue
 		}
@@ -3962,7 +3962,7 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 			h.writeAddAccountError(w, config.ErrDuplicateAPIKey)
 			return
 		}
-		if err := config.AddAccount(account); err != nil {
+		if err := config.AddAccountFirstInGroup(account); err != nil {
 			h.writeAddAccountError(w, err)
 			return
 		}
@@ -4198,7 +4198,7 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		ProxyURL:                proxyURL,
 	}
 
-	if err := config.AddAccount(account); err != nil {
+	if err := config.AddAccountFirstInGroup(account); err != nil {
 		h.writeAddAccountError(w, err, rotatedRefreshToken)
 		return
 	}

@@ -242,3 +242,43 @@ func TestAccountAllowOverageMigration(t *testing.T) {
 		}
 	}
 }
+
+// Accounts added from the admin UI go first in their egress group; the group
+// keeps its order behind them, and other groups are untouched.
+func TestAddAccountFirstInGroupRenumbersOnlyItsGroup(t *testing.T) {
+	if err := Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	add := func(id, proxy string, prio int) {
+		t.Helper()
+		if err := AddAccount(Account{ID: id, KiroApiKey: "ksk_" + id, AuthMethod: "api_key", Enabled: true, ProxyURL: proxy, Priority: prio}); err != nil {
+			t.Fatalf("add %s: %v", id, err)
+		}
+	}
+	add("d-unordered", "", 0)
+	add("d-second", "", 5)
+	add("d-first", "", 2)
+	add("p-first", "socks5://10.0.0.1:1080", 1)
+	if err := AddAccountFirstInGroup(Account{ID: "d-new", KiroApiKey: "ksk_d-new", AuthMethod: "api_key", Enabled: true}); err != nil {
+		t.Fatalf("add new: %v", err)
+	}
+	got := map[string]int{}
+	for _, a := range GetAccounts() {
+		got[a.ID] = a.Priority
+	}
+	want := map[string]int{"d-new": 1, "d-unordered": 2, "d-first": 3, "d-second": 4, "p-first": 1}
+	for id, p := range want {
+		if got[id] != p {
+			t.Fatalf("priority[%s] = %d, want %d (all: %v)", id, got[id], p, got)
+		}
+	}
+
+	if err := AddAccountFirstInGroup(Account{ID: "p-explicit", KiroApiKey: "ksk_p-explicit", AuthMethod: "api_key", Enabled: true, ProxyURL: "socks5://10.0.0.1:1080", Priority: 7}); err != nil {
+		t.Fatalf("add explicit: %v", err)
+	}
+	for _, a := range GetAccounts() {
+		if (a.ID == "p-explicit" && a.Priority != 7) || (a.ID == "p-first" && a.Priority != 1) {
+			t.Fatalf("an explicit priority must be kept and not renumber the group: %s=%d", a.ID, a.Priority)
+		}
+	}
+}
