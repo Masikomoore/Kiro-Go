@@ -21,6 +21,10 @@
   let filterKeyword = '';
   let filterStatus = 'all';
   let privacyModeEnabled = true;
+  const ACCOUNT_CARD_SIZES = ['large', 'medium', 'small'];
+  let accountCardSize = 'large';
+  let accountGroupsView = [];
+  let accountDrag = null;
   let promptRules = [];
   let builderIdSession = '';
   let builderIdPollTimer = null;
@@ -942,65 +946,119 @@
     });
   }
 
-  function renderAccounts() {
-    const container = $('accountsList');
-    if (!container) return;
-    const filtered = getFilteredAccounts();
-    if (filtered.length === 0) {
-      container.innerHTML = '<div class="empty-state">' + escapeHtml(t('accounts.empty')) + '</div>';
-      return;
-    }
-    container.innerHTML = filtered.map(a => {
-      const usagePct = (a.usagePercent || 0) * 100;
-      const usageClass = usagePct > 90 ? 'critical' : usagePct > 70 ? 'high' : '';
-      const trialPct = (a.trialUsagePercent || 0) * 100;
-      const trialClass = trialPct > 90 ? 'critical' : trialPct > 70 ? 'high' : '';
-      const isSelected = selectedAccounts.has(a.id);
-      const weight = a.weight || 0;
-      const weightBadge = weight >= 2 ? '<span class="badge badge-warning">' + escapeHtml(t('accounts.weightShort')) + ':' + weight + '</span>' : '';
-      const priority = a.priority || 0;
-      const priorityBadge = priority > 0 ? '<span class="badge badge-muted">' + escapeHtml(t('accounts.priorityShort')) + ':' + priority + '</span>' : '';
-      const overageBadge = renderOverageBadge(a);
-      const banned = a.banStatus && a.banStatus !== 'ACTIVE';
-      const idAttr = escapeAttr(a.id);
-      const displayEmail = getDisplayEmail(a.email, a.id);
-      const selectLabel = t('accounts.selectAccount', displayEmail);
+  // Out of credits: the same rule the pool uses to skip over-quota accounts.
+  function isAccountExhausted(a) {
+    return a.usageLimit > 0 && (a.usageCurrent || 0) >= a.usageLimit;
+  }
+  // 0 = usable, 1 = out of credits, 2 = disabled. Lower tiers sort later.
+  function accountTier(a) {
+    if (!a.enabled) return 2;
+    return isAccountExhausted(a) ? 1 : 0;
+  }
+  function isAccountFilterActive() {
+    return !!filterKeyword || filterStatus !== 'all';
+  }
+  // Usable accounts by priority (smaller first), then out-of-credits, then disabled.
+  // Array sort is stable, so accounts with equal keys keep their current order.
+  function sortAccountsForGroup(list) {
+    return list.slice().sort((x, y) => (accountTier(x) - accountTier(y)) || ((x.priority || 0) - (y.priority || 0)));
+  }
+  // Groups by outbound proxy: default first, then saved proxies in saved order, then unsaved ones.
+  function buildAccountGroups(list) {
+    const byKey = new Map();
+    list.forEach(a => {
+      const key = a.proxyURL || '';
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(a);
+    });
+    const keys = [];
+    if (byKey.has('')) keys.push('');
+    savedProxies.forEach(p => {
+      if (p.url && byKey.has(p.url) && !keys.includes(p.url)) keys.push(p.url);
+    });
+    byKey.forEach((_, key) => { if (!keys.includes(key)) keys.push(key); });
+    return keys.map(key => ({
+      key,
+      label: key ? getProxyLabel(key) : t('accounts.groupDefault'),
+      accounts: sortAccountsForGroup(byKey.get(key))
+    }));
+  }
+  function groupCreditsLeft(accounts) {
+    return accounts.reduce((sum, a) => (accountTier(a) === 0 && a.usageLimit > 0)
+      ? sum + (a.usageLimit - (a.usageCurrent || 0)) : sum, 0);
+  }
+  // Why an account cannot be dragged, as an i18n key; empty when it can.
+  function accountDragBlockKey(a) {
+    if (isAccountFilterActive()) return 'accounts.dragFilterActive';
+    if (accountTier(a) === 2) return 'accounts.dragDisabled';
+    if (accountTier(a) === 1) return 'accounts.dragExhausted';
+    return '';
+  }
 
-      const refreshSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
-      const userSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
-      const copySvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  function renderAccountCard(a) {
+    const size = accountCardSize;
+    const usagePct = (a.usagePercent || 0) * 100;
+    const usageClass = usagePct > 90 ? 'critical' : usagePct > 70 ? 'high' : '';
+    const trialPct = (a.trialUsagePercent || 0) * 100;
+    const trialClass = trialPct > 90 ? 'critical' : trialPct > 70 ? 'high' : '';
+    const isSelected = selectedAccounts.has(a.id);
+    const exhausted = accountTier(a) === 1;
+    const weight = a.weight || 0;
+    const weightBadge = weight >= 2 ? '<span class="badge badge-warning">' + escapeHtml(t('accounts.weightShort')) + ':' + weight + '</span>' : '';
+    const priority = a.priority || 0;
+    const priorityBadge = priority > 0 ? '<span class="badge badge-muted">' + escapeHtml(t('accounts.priorityShort')) + ':' + priority + '</span>' : '';
+    const exhaustedBadge = exhausted ? '<span class="badge badge-muted">' + escapeHtml(t('accounts.exhausted')) + '</span>' : '';
+    const overageBadge = renderOverageBadge(a);
+    const banned = a.banStatus && a.banStatus !== 'ACTIVE';
+    const idAttr = escapeAttr(a.id);
+    const displayEmail = getDisplayEmail(a.email, a.id);
+    const selectLabel = t('accounts.selectAccount', displayEmail);
+    const dragBlockKey = accountDragBlockKey(a);
+    const dragHandle = '<span class="account-drag-handle' + (dragBlockKey ? ' is-disabled' : '') + '" title="' +
+      escapeAttr(t(dragBlockKey || 'accounts.dragHandle')) + '" aria-hidden="true"><i class="fa-solid fa-grip-vertical"></i></span>';
 
-      return '' +
-        '<div class="account-card' + (isSelected ? ' selected' : '') + '" data-id="' + idAttr + '">' +
-        '<div class="account-header">' +
-        '<div class="account-info">' +
-        '<input type="checkbox" class="account-checkbox" ' + (isSelected ? 'checked' : '') + ' data-id="' + idAttr + '" aria-label="' + escapeAttr(selectLabel) + '" />' +
-        '<div class="account-info-text">' +
-        '<div class="account-email">' + escapeHtml(displayEmail) + '</div>' +
-        '<div class="account-meta">' +
-        getSubBadge(a.subscriptionType) +
-        getTrialBadge(a) +
-        weightBadge +
-        priorityBadge +
-        overageBadge +
-        getProxyBadge(a) +
-        '<span class="badge badge-info">' + escapeHtml(formatAuthMethod(a.provider || a.authMethod)) + '</span>' +
-        getStatusBadge(a) +
-        '</div>' +
-        '</div>' +
-        '</div>' +
-        '<div class="account-actions">' +
-        '<button class="btn btn-icon btn-sm btn-ghost" data-action="refresh" data-id="' + idAttr + '" title="' + escapeAttr(t('accounts.refresh')) + '">' + refreshSvg + '</button>' +
-        '<button class="btn btn-icon btn-sm btn-ghost" data-action="detail" data-id="' + idAttr + '" title="' + escapeAttr(t('accounts.detail')) + '">' + userSvg + '</button>' +
-        '<button class="btn btn-icon btn-sm btn-ghost" data-action="copyJSON" data-id="' + idAttr + '" title="' + escapeAttr(t('accounts.copyJSON')) + '">' + copySvg + '</button>' +
-        (banned ? '' :
-          '<button class="btn btn-sm ' + (a.enabled ? 'btn-outline' : 'btn-primary') + '" data-action="toggle" data-id="' + idAttr + '" data-enabled="' + (!a.enabled) + '">' +
-          escapeHtml(a.enabled ? t('accounts.disable') : t('accounts.enable')) +
-          '</button>') +
-        '<button class="btn btn-sm btn-secondary" data-action="test" data-id="' + idAttr + '" id="test-' + idAttr + '">' + escapeHtml(t('accounts.test')) + '</button>' +
-        '<button class="btn btn-sm btn-danger" data-action="delete" data-id="' + idAttr + '">' + escapeHtml(t('accounts.delete')) + '</button>' +
-        '</div>' +
-        '</div>' +
+    const refreshSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
+    const userSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
+    const copySvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
+    const cardClass = 'account-card' + (size !== 'large' ? ' account-card--' + size : '') +
+      (isSelected ? ' selected' : '') + (exhausted ? ' is-exhausted' : '');
+    const draggable = dragBlockKey ? '' : ' draggable="true"';
+
+    return '' +
+      '<div class="' + cardClass + '" data-id="' + idAttr + '"' + draggable + '>' +
+      '<div class="account-header">' +
+      '<div class="account-info">' +
+      '<input type="checkbox" class="account-checkbox" ' + (isSelected ? 'checked' : '') + ' data-id="' + idAttr + '" aria-label="' + escapeAttr(selectLabel) + '" />' +
+      dragHandle +
+      '<div class="account-info-text">' +
+      '<div class="account-email">' + escapeHtml(displayEmail) + '</div>' +
+      '<div class="account-meta">' +
+      getSubBadge(a.subscriptionType) +
+      getTrialBadge(a) +
+      weightBadge +
+      priorityBadge +
+      overageBadge +
+      exhaustedBadge +
+      getProxyBadge(a) +
+      '<span class="badge badge-info">' + escapeHtml(formatAuthMethod(a.provider || a.authMethod)) + '</span>' +
+      getStatusBadge(a) +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="account-actions">' +
+      '<button class="btn btn-icon btn-sm btn-ghost" data-action="refresh" data-id="' + idAttr + '" title="' + escapeAttr(t('accounts.refresh')) + '">' + refreshSvg + '</button>' +
+      '<button class="btn btn-icon btn-sm btn-ghost" data-action="detail" data-id="' + idAttr + '" title="' + escapeAttr(t('accounts.detail')) + '">' + userSvg + '</button>' +
+      '<button class="btn btn-icon btn-sm btn-ghost" data-action="copyJSON" data-id="' + idAttr + '" title="' + escapeAttr(t('accounts.copyJSON')) + '">' + copySvg + '</button>' +
+      (banned ? '' :
+        '<button class="btn btn-sm ' + (a.enabled ? 'btn-outline' : 'btn-primary') + '" data-action="toggle" data-id="' + idAttr + '" data-enabled="' + (!a.enabled) + '">' +
+        escapeHtml(a.enabled ? t('accounts.disable') : t('accounts.enable')) +
+        '</button>') +
+      '<button class="btn btn-sm btn-secondary" data-action="test" data-id="' + idAttr + '" id="test-' + idAttr + '">' + escapeHtml(t('accounts.test')) + '</button>' +
+      '<button class="btn btn-sm btn-danger" data-action="delete" data-id="' + idAttr + '">' + escapeHtml(t('accounts.delete')) + '</button>' +
+      '</div>' +
+      '</div>' +
+      (size === 'small' ? '' :
         (a.usageLimit > 0 ?
           '<div class="account-usage">' +
           '<div class="usage-label">' + escapeHtml(t('accounts.mainQuota')) + '</div>' +
@@ -1013,16 +1071,134 @@
           '<div class="usage-bar"><div class="usage-fill ' + trialClass + '" data-usage-pct="' + escapeAttr(trialPct) + '"></div></div>' +
           '<div class="usage-text"><span>' + (a.trialUsageCurrent != null ? a.trialUsageCurrent.toFixed(1) : 0) + ' / ' + (a.trialUsageLimit != null ? a.trialUsageLimit.toFixed(0) : 0) + '</span><span>' + trialPct.toFixed(1) + '%</span></div>' +
           '</div>' : '') +
-        '<div class="account-stats">' +
-        '<div class="account-stat"><div class="account-stat-value">' + (a.requestCount || 0) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.requests')) + '</div></div>' +
-        '<div class="account-stat"><div class="account-stat-value">' + formatNum(a.totalTokens || 0) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.tokens')) + '</div></div>' +
-        '<div class="account-stat"><div class="account-stat-value">' + (a.totalCredits || 0).toFixed(1) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.credits')) + '</div></div>' +
-        '<div class="account-stat"><div class="account-stat-value">' + escapeHtml(formatTokenExpiry(a.expiresAt)) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.expiry')) + '</div></div>' +
-        '</div>' +
-        '</div>';
-    }).join('');
+        (size === 'large' ?
+          '<div class="account-stats">' +
+          '<div class="account-stat"><div class="account-stat-value">' + (a.requestCount || 0) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.requests')) + '</div></div>' +
+          '<div class="account-stat"><div class="account-stat-value">' + formatNum(a.totalTokens || 0) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.tokens')) + '</div></div>' +
+          '<div class="account-stat"><div class="account-stat-value">' + (a.totalCredits || 0).toFixed(1) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.credits')) + '</div></div>' +
+          '<div class="account-stat"><div class="account-stat-value">' + escapeHtml(formatTokenExpiry(a.expiresAt)) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.expiry')) + '</div></div>' +
+          '</div>' : '')) +
+      '</div>';
+  }
+
+  function renderAccountGroup(group, index) {
+    const credits = groupCreditsLeft(group.accounts);
+    return '' +
+      '<section class="account-group" data-group="' + index + '">' +
+      '<div class="account-group-header">' +
+      '<i class="fa-solid fa-network-wired" aria-hidden="true"></i>' +
+      '<span class="account-group-name">' + escapeHtml(group.label) + '</span>' +
+      '<span class="account-group-meta">' + escapeHtml(t('accounts.groupCount', String(group.accounts.length))) +
+      ' · ' + escapeHtml(t('accounts.groupCredits', credits.toFixed(1))) + '</span>' +
+      '</div>' +
+      '<div class="account-group-cards">' + group.accounts.map(a => renderAccountCard(a)).join('') + '</div>' +
+      '</section>';
+  }
+
+  function renderAccounts() {
+    const container = $('accountsList');
+    if (!container) return;
+    const filtered = getFilteredAccounts();
+    if (filtered.length === 0) {
+      accountGroupsView = [];
+      container.innerHTML = '<div class="empty-state">' + escapeHtml(t('accounts.empty')) + '</div>';
+      return;
+    }
+    accountGroupsView = buildAccountGroups(filtered);
+    container.innerHTML = accountGroupsView.map((g, i) => renderAccountGroup(g, i)).join('');
     applyUsageBars(container);
     enhanceCustomSelects(container);
+  }
+
+  // Card size: large (full card), medium (no stats row), small (one row). Saved per browser.
+  function initAccountCardSize() {
+    const saved = localStorage.getItem('accountCardSize');
+    accountCardSize = ACCOUNT_CARD_SIZES.includes(saved) ? saved : 'large';
+    renderAccountSizeToggle();
+  }
+  function renderAccountSizeToggle() {
+    qsa('#accountSizeToggle [data-size]').forEach(btn => {
+      btn.setAttribute('aria-pressed', String(btn.dataset.size === accountCardSize));
+    });
+  }
+  function setAccountCardSize(size) {
+    if (!ACCOUNT_CARD_SIZES.includes(size) || size === accountCardSize) return;
+    accountCardSize = size;
+    localStorage.setItem('accountCardSize', size);
+    renderAccountSizeToggle();
+    renderAccounts();
+  }
+
+  // Drag to reorder. Priority is the rank within a proxy group: the dropped group gets 1..n.
+  function accountCardGroupIndex(card) {
+    const section = card ? card.closest('.account-group') : null;
+    return section ? Number(section.dataset.group) : -1;
+  }
+  function clearDropIndicators() {
+    qsa('#accountsList .account-card.drop-before, #accountsList .account-card.drop-after').forEach(el => {
+      el.classList.remove('drop-before', 'drop-after');
+    });
+  }
+  function onAccountDragStart(e) {
+    const card = e.target.closest('.account-card');
+    if (!card || card.getAttribute('draggable') !== 'true') return;
+    accountDrag = { id: card.dataset.id, group: accountCardGroupIndex(card) };
+    card.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', card.dataset.id);
+  }
+  function onAccountDragOver(e) {
+    if (!accountDrag) return;
+    const card = e.target.closest('.account-card');
+    if (!card || card.dataset.id === accountDrag.id || card.getAttribute('draggable') !== 'true' ||
+      accountCardGroupIndex(card) !== accountDrag.group) {
+      clearDropIndicators();
+      return;
+    }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = card.getBoundingClientRect();
+    const edge = e.clientY > rect.top + rect.height / 2 ? 'drop-after' : 'drop-before';
+    if (card.classList.contains(edge)) return;
+    clearDropIndicators();
+    card.classList.add(edge);
+  }
+  function onAccountDrop(e) {
+    if (!accountDrag) return;
+    const drag = accountDrag;
+    accountDrag = null;
+    const card = e.target.closest('.account-card');
+    const after = !!card && card.classList.contains('drop-after');
+    clearDropIndicators();
+    if (!card || card.dataset.id === drag.id || accountCardGroupIndex(card) !== drag.group) return;
+    e.preventDefault();
+    const group = accountGroupsView[drag.group];
+    if (!group) return;
+    const before = group.accounts.filter(a => accountTier(a) === 0).map(a => a.id);
+    const ids = before.slice();
+    ids.splice(ids.indexOf(drag.id), 1);
+    let to = ids.indexOf(card.dataset.id);
+    if (to < 0) return;
+    if (after) to++;
+    ids.splice(to, 0, drag.id);
+    if (ids.every((id, i) => id === before[i])) return;
+    reorderAccounts(ids);
+  }
+  function onAccountDragEnd() {
+    accountDrag = null;
+    clearDropIndicators();
+    qsa('#accountsList .account-card.dragging').forEach(el => el.classList.remove('dragging'));
+  }
+  async function reorderAccounts(ids) {
+    try {
+      const res = await api('/accounts/reorder', { method: 'POST', body: JSON.stringify({ ids }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.success === false) throw new Error(d.error || t('common.failed'));
+      toast(t('accounts.reorderSuccess'), 'success');
+      loadAccounts();
+    } catch (e) {
+      toast(t('accounts.reorderFailed') + ': ' + ((e && e.message) || ''), 'error');
+    }
   }
 
   // Account actions
@@ -3440,6 +3616,14 @@
     $('filterSearch').addEventListener('input', onFilterChange);
     $('filterStatusSelect').addEventListener('change', onFilterChange);
 
+    $('accountSizeToggle').addEventListener('click', e => {
+      const btn = e.target.closest('[data-size]');
+      if (btn) setAccountCardSize(btn.dataset.size);
+    });
+    $('accountsList').addEventListener('dragstart', onAccountDragStart);
+    $('accountsList').addEventListener('dragover', onAccountDragOver);
+    $('accountsList').addEventListener('drop', onAccountDrop);
+    $('accountsList').addEventListener('dragend', onAccountDragEnd);
     $('accountsList').addEventListener('click', e => {
       const cb = e.target.closest('.account-checkbox');
       if (cb) {
@@ -3801,6 +3985,7 @@
     applyTranslations();
     initCustomSelectObserver();
     initPrivacyMode();
+    initAccountCardSize();
     initRememberMe();
     const yr = $('footerYear');
     if (yr) yr.textContent = new Date().getFullYear();

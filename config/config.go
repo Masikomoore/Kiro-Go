@@ -779,6 +779,44 @@ func UpdateAccount(id string, account Account) error {
 	return nil
 }
 
+// ErrUnknownAccount is returned when a reorder names an account that does not exist.
+var ErrUnknownAccount = errors.New("unknown account")
+
+// ErrDuplicateReorderID is returned when a reorder names the same account twice.
+var ErrDuplicateReorderID = errors.New("duplicate account id")
+
+// SetAccountPriorityOrder sets Priority = index+1 for each listed account, in
+// one save. Accounts not listed keep their priority. Validation happens under
+// the same lock as the write, so a rejected request changes nothing.
+func SetAccountPriorityOrder(ids []string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	index := make(map[string]int, len(cfg.Accounts))
+	for i, a := range cfg.Accounts {
+		index[a.ID] = i
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			return ErrDuplicateReorderID
+		}
+		if _, ok := index[id]; !ok {
+			return ErrUnknownAccount
+		}
+		seen[id] = true
+	}
+	previous := make([]Account, len(cfg.Accounts))
+	copy(previous, cfg.Accounts)
+	for rank, id := range ids {
+		cfg.Accounts[index[id]].Priority = rank + 1
+	}
+	if err := Save(); err != nil {
+		cfg.Accounts = previous
+		return err
+	}
+	return nil
+}
+
 // UpdateAccountOverageStatus persists the cached upstream overage status fields.
 // Called after a successful setUserPreference or getUsageLimits round-trip.
 func UpdateAccountOverageStatus(id, status, capability string, cap, rate, current float64, checkedAt int64) error {

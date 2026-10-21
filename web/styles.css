@@ -1887,6 +1887,141 @@ img.brand-icon {
   letter-spacing: 0.04em;
 }
 
+/* Account card sizes, proxy groups, and drag-to-order */
+.size-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.size-toggle-btn {
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.size-toggle-btn + .size-toggle-btn {
+  border-left: 1px solid var(--border);
+}
+.size-toggle-btn:hover {
+  color: var(--foreground);
+}
+.size-toggle-btn[aria-pressed="true"] {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.account-group {
+  margin-bottom: 0.5rem;
+}
+.account-group-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.375rem 0.25rem;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+}
+.account-group-name {
+  font-weight: 600;
+  color: var(--foreground);
+  word-break: break-all;
+}
+.account-group-meta {
+  margin-left: auto;
+  font-feature-settings: "tnum";
+  white-space: nowrap;
+}
+.account-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.125rem;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  cursor: grab;
+  user-select: none;
+}
+.account-drag-handle:hover {
+  color: var(--foreground);
+}
+.account-drag-handle.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+.account-card.dragging {
+  opacity: 0.45;
+}
+.account-card.drop-before {
+  box-shadow: 0 -3px 0 0 var(--primary);
+}
+.account-card.drop-after {
+  box-shadow: 0 3px 0 0 var(--primary);
+}
+/* Out of credits: greyed out but still clickable. */
+.account-card.is-exhausted {
+  opacity: 0.55;
+  filter: grayscale(0.8);
+}
+.account-card.is-exhausted:hover {
+  opacity: 0.85;
+}
+/* Medium: same card without the stats row, tighter padding. */
+.account-card.account-card--medium {
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+}
+.account-card.account-card--medium .account-header {
+  margin-bottom: 0.5rem;
+}
+/* Small: one compact row per account. */
+.account-card.account-card--small {
+  padding: 0.375rem 0.75rem;
+  margin-bottom: 0.375rem;
+}
+.account-card.account-card--small .account-header {
+  flex-direction: row;
+  align-items: center;
+  margin-bottom: 0;
+}
+.account-card.account-card--small .account-info-text {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  min-width: 0;
+}
+.account-card.account-card--small .account-meta {
+  margin-top: 0;
+}
+.account-card.account-card--small .account-email {
+  font-size: 0.875rem;
+}
+.account-card.account-card--small .account-actions {
+  width: auto;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.25rem;
+}
+.account-card.account-card--small .account-actions .btn {
+  width: auto;
+  height: 1.75rem;
+  min-height: 0;
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+}
+.account-card.account-card--small .account-actions .btn-icon {
+  width: 1.75rem;
+  padding: 0;
+}
+
 /* Usage bars */
 .account-usage {
   margin: 0.5rem 0 0.75rem;

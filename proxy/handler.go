@@ -2554,6 +2554,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiAddAccount(w, r)
 	case path == "/accounts/batch" && r.Method == "POST":
 		h.apiBatchAccounts(w, r)
+	case path == "/accounts/reorder" && r.Method == "POST":
+		h.apiReorderAccounts(w, r)
 	// models/refresh 必须在通用 /refresh 前匹配，否则会被误拦截
 	case path == "/accounts/models/refresh" && r.Method == "POST":
 		h.apiRefreshAllAccountsModels(w, r)
@@ -2924,6 +2926,36 @@ func (h *Handler) apiSetAccountOverage(w http.ResponseWriter, r *http.Request, i
 }
 
 // apiBatchAccounts 批量操作账号（启用/禁用/刷新）
+// apiReorderAccounts POST /admin/api/accounts/reorder {"ids":[...]}
+// Gives the listed accounts Priority 1..n in the given order (smaller is
+// preferred). Unlisted accounts keep their priority.
+func (h *Handler) apiReorderAccounts(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	if len(req.IDs) == 0 {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "No account IDs provided"})
+		return
+	}
+	if err := config.SetAccountPriorityOrder(req.IDs); err != nil {
+		status := 500
+		if errors.Is(err, config.ErrUnknownAccount) || errors.Is(err, config.ErrDuplicateReorderID) {
+			status = 400
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	h.pool.Reload()
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "count": len(req.IDs)})
+}
+
 func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs    []string `json:"ids"`
