@@ -1939,6 +1939,46 @@ img.brand-icon {
   font-feature-settings: "tnum";
   white-space: nowrap;
 }
+.account-group-header[draggable="true"] {
+  cursor: grab;
+}
+.account-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.account-group-toggle:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+.account-group-toggle:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+.account-group-toggle i {
+  transition: transform 0.15s;
+}
+.account-group.is-collapsed .account-group-toggle i {
+  transform: rotate(-90deg);
+}
+.account-group.dragging {
+  opacity: 0.45;
+}
+.account-group-header.drop-before {
+  box-shadow: 0 -3px 0 0 var(--primary);
+}
+.account-group-header.drop-after {
+  box-shadow: 0 3px 0 0 var(--primary);
+}
 .account-drag-handle {
   display: inline-flex;
   align-items: center;
@@ -1965,13 +2005,20 @@ img.brand-icon {
 .account-card.drop-after {
   box-shadow: 0 3px 0 0 var(--primary);
 }
-/* Out of credits: greyed out but still clickable. */
-.account-card.is-exhausted {
+/* Disabled or out of credits: greyed out but still clickable. Applied to the card's
+   children so a disabled card with credits left can keep its quota bar in colour. */
+.account-card.is-disabled > *,
+.account-card.is-exhausted > * {
   opacity: 0.55;
   filter: grayscale(0.8);
 }
-.account-card.is-exhausted:hover {
+.account-card.is-disabled:hover > *,
+.account-card.is-exhausted:hover > * {
   opacity: 0.85;
+}
+.account-card.is-disabled.quota-in-colour > .account-usage {
+  opacity: 1;
+  filter: none;
 }
 /* Medium: same card without the stats row, tighter padding. */
 .account-card.account-card--medium {

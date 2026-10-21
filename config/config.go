@@ -218,6 +218,11 @@ type Config struct {
 	// proxy or an account. Saving one does not route any traffic through it.
 	Proxies []SavedProxy `json:"proxies,omitempty"`
 
+	// GroupOrder is the display order of account groups in the admin UI. Entries are
+	// group keys: "" for the default group, otherwise the outbound proxy URL. Display
+	// only; scheduling still follows each account's priority number.
+	GroupOrder []string `json:"groupOrder,omitempty"`
+
 	// SanitizeClaudeCodePrompt is kept for backward-compatible JSON loading only.
 	// Migrated to FilterClaudeCode on first load. Do not use directly.
 	SanitizeClaudeCodePrompt bool `json:"sanitizeClaudeCodePrompt,omitempty"`
@@ -1314,6 +1319,21 @@ func UpdateSavedProxies(proxies []SavedProxy) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.Proxies = append([]SavedProxy{}, proxies...)
+	return Save()
+}
+
+// GetGroupOrder returns a copy of the saved account group display order.
+func GetGroupOrder() []string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	return append([]string{}, cfg.GroupOrder...)
+}
+
+// UpdateGroupOrder replaces the saved account group display order.
+func UpdateGroupOrder(order []string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.GroupOrder = append([]string{}, order...)
 	return Save()
 }
 

@@ -24,6 +24,8 @@
   const ACCOUNT_CARD_SIZES = ['large', 'medium', 'small'];
   let accountCardSize = 'large';
   let accountGroupsView = [];
+  let accountGroupOrder = [];
+  let accountGroupCollapsed = {};
   let accountDrag = null;
   let promptRules = [];
   let builderIdSession = '';
@@ -926,13 +928,22 @@
     }
     return out.join('');
   }
-  function formatTokenExpiry(ts) {
-    if (!ts) return '-';
-    const diff = ts - Date.now() / 1000;
-    if (diff <= 0) return t('time.expired');
-    if (diff < 3600) return Math.floor(diff / 60) + t('time.minutes');
-    if (diff < 86400) return Math.floor(diff / 3600) + t('time.hours');
-    return Math.floor(diff / 86400) + t('time.days');
+  // Quota reset countdown in whole days from nextResetDate (YYYY-MM-DD, server local date).
+  function formatQuotaReset(dateStr) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr || '');
+    if (!m) return '-';
+    const reset = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const days = Math.round((reset - today) / (1000 * 60 * 60 * 24));
+    if (days < 0) return '-';
+    if (days === 0) return t('accounts.quotaResetToday');
+    return days + t('time.days');
+  }
+  // Quota percent from current/limit so fresh imports show their real usage; the stored percent is the fallback.
+  function quotaPercent(current, limit, storedPercent) {
+    if (limit > 0) return (current || 0) / limit * 100;
+    return (storedPercent || 0) * 100;
   }
   function formatNum(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
@@ -963,7 +974,7 @@
   function sortAccountsForGroup(list) {
     return list.slice().sort((x, y) => (accountTier(x) - accountTier(y)) || ((x.priority || 0) - (y.priority || 0)));
   }
-  // Groups by outbound proxy: default first, then saved proxies in saved order, then unsaved ones.
+  // Groups by outbound proxy. Saved display order first, then default, saved proxies in saved order, then unsaved ones.
   function buildAccountGroups(list) {
     const byKey = new Map();
     list.forEach(a => {
@@ -972,16 +983,38 @@
       byKey.get(key).push(a);
     });
     const keys = [];
-    if (byKey.has('')) keys.push('');
-    savedProxies.forEach(p => {
-      if (p.url && byKey.has(p.url) && !keys.includes(p.url)) keys.push(p.url);
-    });
-    byKey.forEach((_, key) => { if (!keys.includes(key)) keys.push(key); });
+    const addKey = key => { if (byKey.has(key) && !keys.includes(key)) keys.push(key); };
+    accountGroupOrder.forEach(addKey);
+    addKey('');
+    savedProxies.forEach(p => { if (p.url) addKey(p.url); });
+    byKey.forEach((_, key) => addKey(key));
     return keys.map(key => ({
       key,
       label: key ? getProxyLabel(key) : t('accounts.groupDefault'),
       accounts: sortAccountsForGroup(byKey.get(key))
     }));
+  }
+  // Manual collapse state wins; otherwise a group with no usable account starts collapsed.
+  // While a search or status filter is active every group with matches is shown expanded.
+  function isAccountGroupCollapsed(group) {
+    if (isAccountFilterActive()) return false;
+    if (Object.prototype.hasOwnProperty.call(accountGroupCollapsed, group.key)) return accountGroupCollapsed[group.key] === true;
+    return !group.accounts.some(a => accountTier(a) === 0);
+  }
+  function toggleAccountGroup(key) {
+    const group = accountGroupsView.find(g => g.key === key);
+    if (!group || isAccountFilterActive()) return;
+    accountGroupCollapsed[key] = !isAccountGroupCollapsed(group);
+    localStorage.setItem('accountGroupCollapsed', JSON.stringify(accountGroupCollapsed));
+    renderAccounts();
+  }
+  function initAccountGroupCollapsed() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('accountGroupCollapsed') || '{}');
+      accountGroupCollapsed = saved && typeof saved === 'object' ? saved : {};
+    } catch (e) {
+      accountGroupCollapsed = {};
+    }
   }
   function groupCreditsLeft(accounts) {
     return accounts.reduce((sum, a) => (accountTier(a) === 0 && a.usageLimit > 0)
@@ -997,9 +1030,9 @@
 
   function renderAccountCard(a) {
     const size = accountCardSize;
-    const usagePct = (a.usagePercent || 0) * 100;
+    const usagePct = quotaPercent(a.usageCurrent, a.usageLimit, a.usagePercent);
     const usageClass = usagePct > 90 ? 'critical' : usagePct > 70 ? 'high' : '';
-    const trialPct = (a.trialUsagePercent || 0) * 100;
+    const trialPct = quotaPercent(a.trialUsageCurrent, a.trialUsageLimit, a.trialUsagePercent);
     const trialClass = trialPct > 90 ? 'critical' : trialPct > 70 ? 'high' : '';
     const isSelected = selectedAccounts.has(a.id);
     const exhausted = accountTier(a) === 1;
@@ -1007,7 +1040,6 @@
     const weightBadge = weight >= 2 ? '<span class="badge badge-warning">' + escapeHtml(t('accounts.weightShort')) + ':' + weight + '</span>' : '';
     const priority = a.priority || 0;
     const priorityBadge = priority > 0 ? '<span class="badge badge-muted">' + escapeHtml(t('accounts.priorityShort')) + ':' + priority + '</span>' : '';
-    const exhaustedBadge = exhausted ? '<span class="badge badge-muted">' + escapeHtml(t('accounts.exhausted')) + '</span>' : '';
     const overageBadge = renderOverageBadge(a);
     const banned = a.banStatus && a.banStatus !== 'ACTIVE';
     const idAttr = escapeAttr(a.id);
@@ -1021,8 +1053,12 @@
     const userSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
     const copySvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 
+    // Disabled and out-of-credits cards are both greyed. A disabled card that still has credits keeps its quota bar in colour.
+    const disabled = !a.enabled;
+    const quotaInColour = disabled && !isAccountExhausted(a);
     const cardClass = 'account-card' + (size !== 'large' ? ' account-card--' + size : '') +
-      (isSelected ? ' selected' : '') + (exhausted ? ' is-exhausted' : '');
+      (isSelected ? ' selected' : '') + (exhausted ? ' is-exhausted' : '') + (disabled ? ' is-disabled' : '') +
+      (quotaInColour ? ' quota-in-colour' : '');
     const draggable = dragBlockKey ? '' : ' draggable="true"';
 
     return '' +
@@ -1039,7 +1075,6 @@
       weightBadge +
       priorityBadge +
       overageBadge +
-      exhaustedBadge +
       getProxyBadge(a) +
       '<span class="badge badge-info">' + escapeHtml(formatAuthMethod(a.provider || a.authMethod)) + '</span>' +
       getStatusBadge(a) +
@@ -1076,22 +1111,29 @@
           '<div class="account-stat"><div class="account-stat-value">' + (a.requestCount || 0) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.requests')) + '</div></div>' +
           '<div class="account-stat"><div class="account-stat-value">' + formatNum(a.totalTokens || 0) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.tokens')) + '</div></div>' +
           '<div class="account-stat"><div class="account-stat-value">' + (a.totalCredits || 0).toFixed(1) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.credits')) + '</div></div>' +
-          '<div class="account-stat"><div class="account-stat-value">' + escapeHtml(formatTokenExpiry(a.expiresAt)) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.expiry')) + '</div></div>' +
+          '<div class="account-stat"><div class="account-stat-value">' + escapeHtml(formatQuotaReset(a.nextResetDate)) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.quotaReset')) + '</div></div>' +
           '</div>' : '')) +
       '</div>';
   }
 
-  function renderAccountGroup(group, index) {
+  function renderAccountGroup(group) {
     const credits = groupCreditsLeft(group.accounts);
+    const collapsed = isAccountGroupCollapsed(group);
+    const filtering = isAccountFilterActive();
+    const headerAttrs = filtering ? '' : ' draggable="true" title="' + escapeAttr(t('accounts.groupDragHint')) + '"';
+    const toggleLabel = t(collapsed ? 'accounts.groupExpand' : 'accounts.groupCollapse');
     return '' +
-      '<section class="account-group" data-group="' + index + '">' +
-      '<div class="account-group-header">' +
+      '<section class="account-group' + (collapsed ? ' is-collapsed' : '') + '" data-group-key="' + escapeAttr(group.key) + '">' +
+      '<div class="account-group-header"' + headerAttrs + '>' +
+      '<button class="account-group-toggle" type="button" data-group-toggle aria-expanded="' + String(!collapsed) + '"' +
+      (filtering ? ' disabled' : '') + ' title="' + escapeAttr(toggleLabel) + '" aria-label="' + escapeAttr(toggleLabel) + '">' +
+      '<i class="fa-solid fa-chevron-down" aria-hidden="true"></i></button>' +
       '<i class="fa-solid fa-network-wired" aria-hidden="true"></i>' +
       '<span class="account-group-name">' + escapeHtml(group.label) + '</span>' +
       '<span class="account-group-meta">' + escapeHtml(t('accounts.groupCount', String(group.accounts.length))) +
       ' · ' + escapeHtml(t('accounts.groupCredits', credits.toFixed(1))) + '</span>' +
       '</div>' +
-      '<div class="account-group-cards">' + group.accounts.map(a => renderAccountCard(a)).join('') + '</div>' +
+      (collapsed ? '' : '<div class="account-group-cards">' + group.accounts.map(a => renderAccountCard(a)).join('') + '</div>') +
       '</section>';
   }
 
@@ -1105,7 +1147,7 @@
       return;
     }
     accountGroupsView = buildAccountGroups(filtered);
-    container.innerHTML = accountGroupsView.map((g, i) => renderAccountGroup(g, i)).join('');
+    container.innerHTML = accountGroupsView.map(g => renderAccountGroup(g)).join('');
     applyUsageBars(container);
     enhanceCustomSelects(container);
   }
@@ -1129,29 +1171,56 @@
     renderAccounts();
   }
 
-  // Drag to reorder. Priority is the rank within a proxy group: the dropped group gets 1..n.
-  function accountCardGroupIndex(card) {
+  // Drag to reorder. Cards: priority is the rank within a proxy group (dropped group gets 1..n).
+  // Group headers: display order of the groups, saved on the server. Both are off while a filter is active.
+  function accountCardGroupKey(card) {
     const section = card ? card.closest('.account-group') : null;
-    return section ? Number(section.dataset.group) : -1;
+    return section ? section.dataset.groupKey : null;
   }
   function clearDropIndicators() {
-    qsa('#accountsList .account-card.drop-before, #accountsList .account-card.drop-after').forEach(el => {
+    qsa('#accountsList .drop-before, #accountsList .drop-after').forEach(el => {
       el.classList.remove('drop-before', 'drop-after');
     });
   }
   function onAccountDragStart(e) {
+    const header = e.target.closest('.account-group-header');
+    if (header) {
+      const section = header.closest('.account-group');
+      if (!section || isAccountFilterActive()) return;
+      accountDrag = { type: 'group', key: section.dataset.groupKey };
+      section.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', section.dataset.groupKey);
+      return;
+    }
     const card = e.target.closest('.account-card');
     if (!card || card.getAttribute('draggable') !== 'true') return;
-    accountDrag = { id: card.dataset.id, group: accountCardGroupIndex(card) };
+    accountDrag = { type: 'card', id: card.dataset.id, group: accountCardGroupKey(card) };
     card.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', card.dataset.id);
   }
   function onAccountDragOver(e) {
     if (!accountDrag) return;
+    if (accountDrag.type === 'group') {
+      const header = e.target.closest('.account-group-header');
+      const section = header ? header.closest('.account-group') : null;
+      if (!section || section.dataset.groupKey === accountDrag.key || isAccountFilterActive()) {
+        clearDropIndicators();
+        return;
+      }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = header.getBoundingClientRect();
+      const edge = e.clientY > rect.top + rect.height / 2 ? 'drop-after' : 'drop-before';
+      if (header.classList.contains(edge)) return;
+      clearDropIndicators();
+      header.classList.add(edge);
+      return;
+    }
     const card = e.target.closest('.account-card');
     if (!card || card.dataset.id === accountDrag.id || card.getAttribute('draggable') !== 'true' ||
-      accountCardGroupIndex(card) !== accountDrag.group) {
+      accountCardGroupKey(card) !== accountDrag.group) {
       clearDropIndicators();
       return;
     }
@@ -1167,12 +1236,16 @@
     if (!accountDrag) return;
     const drag = accountDrag;
     accountDrag = null;
+    if (drag.type === 'group') {
+      dropAccountGroup(e, drag);
+      return;
+    }
     const card = e.target.closest('.account-card');
     const after = !!card && card.classList.contains('drop-after');
     clearDropIndicators();
-    if (!card || card.dataset.id === drag.id || accountCardGroupIndex(card) !== drag.group) return;
+    if (!card || card.dataset.id === drag.id || accountCardGroupKey(card) !== drag.group) return;
     e.preventDefault();
-    const group = accountGroupsView[drag.group];
+    const group = accountGroupsView.find(g => g.key === drag.group);
     if (!group) return;
     const before = group.accounts.filter(a => accountTier(a) === 0).map(a => a.id);
     const ids = before.slice();
@@ -1184,10 +1257,39 @@
     if (ids.every((id, i) => id === before[i])) return;
     reorderAccounts(ids);
   }
+  function dropAccountGroup(e, drag) {
+    const header = e.target.closest('.account-group-header');
+    const section = header ? header.closest('.account-group') : null;
+    const after = !!header && header.classList.contains('drop-after');
+    clearDropIndicators();
+    if (!section || section.dataset.groupKey === drag.key || isAccountFilterActive()) return;
+    e.preventDefault();
+    const keys = accountGroupsView.map(g => g.key);
+    const order = keys.slice();
+    order.splice(order.indexOf(drag.key), 1);
+    let to = order.indexOf(section.dataset.groupKey);
+    if (to < 0) return;
+    if (after) to++;
+    order.splice(to, 0, drag.key);
+    if (order.every((key, i) => key === keys[i])) return;
+    saveAccountGroupOrder(order);
+  }
   function onAccountDragEnd() {
     accountDrag = null;
     clearDropIndicators();
-    qsa('#accountsList .account-card.dragging').forEach(el => el.classList.remove('dragging'));
+    qsa('#accountsList .account-card.dragging, #accountsList .account-group.dragging').forEach(el => el.classList.remove('dragging'));
+  }
+  async function saveAccountGroupOrder(order) {
+    try {
+      const res = await api('/accounts/group-order', { method: 'POST', body: JSON.stringify({ order }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.success === false) throw new Error(d.error || t('common.failed'));
+      accountGroupOrder = order;
+      toast(t('accounts.groupOrderSuccess'), 'success');
+      renderAccounts();
+    } catch (e) {
+      toast(t('accounts.groupOrderFailed') + ': ' + ((e && e.message) || ''), 'error');
+    }
   }
   async function reorderAccounts(ids) {
     try {
@@ -1841,6 +1943,7 @@
     const d = await res.json();
     activeProxyURL = d.proxyURL || '';
     savedProxies = Array.isArray(d.proxies) ? d.proxies : [];
+    accountGroupOrder = Array.isArray(d.groupOrder) ? d.groupOrder : [];
     renderProxySettings();
     // Accounts may have loaded before the proxy names arrived; their tags need a re-render.
     if (accountsLoaded) renderAccounts();
@@ -3625,6 +3728,11 @@
     $('accountsList').addEventListener('drop', onAccountDrop);
     $('accountsList').addEventListener('dragend', onAccountDragEnd);
     $('accountsList').addEventListener('click', e => {
+      const groupToggle = e.target.closest('[data-group-toggle]');
+      if (groupToggle) {
+        toggleAccountGroup(groupToggle.closest('.account-group').dataset.groupKey);
+        return;
+      }
       const cb = e.target.closest('.account-checkbox');
       if (cb) {
         toggleSelectAccount(cb.dataset.id);
@@ -3986,6 +4094,7 @@
     initCustomSelectObserver();
     initPrivacyMode();
     initAccountCardSize();
+    initAccountGroupCollapsed();
     initRememberMe();
     const yr = $('footerYear');
     if (yr) yr.textContent = new Date().getFullYear();

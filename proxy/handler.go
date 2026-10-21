@@ -2556,6 +2556,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiBatchAccounts(w, r)
 	case path == "/accounts/reorder" && r.Method == "POST":
 		h.apiReorderAccounts(w, r)
+	case path == "/accounts/group-order" && r.Method == "POST":
+		h.apiUpdateGroupOrder(w, r)
 	// models/refresh 必须在通用 /refresh 前匹配，否则会被误拦截
 	case path == "/accounts/models/refresh" && r.Method == "POST":
 		h.apiRefreshAllAccountsModels(w, r)
@@ -2954,6 +2956,38 @@ func (h *Handler) apiReorderAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	h.pool.Reload()
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "count": len(req.IDs)})
+}
+
+// apiUpdateGroupOrder POST /admin/api/accounts/group-order {"order":[...]}
+// Saves the display order of account groups. Each entry is a group key: "" for
+// the default group or an outbound proxy URL. Display only; scheduling is unchanged.
+func (h *Handler) apiUpdateGroupOrder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Order []string `json:"order"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	seen := make(map[string]bool, len(req.Order))
+	order := make([]string, 0, len(req.Order))
+	for _, key := range req.Order {
+		key = strings.TrimSpace(key)
+		if seen[key] {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "duplicate group key"})
+			return
+		}
+		seen[key] = true
+		order = append(order, key)
+	}
+	if err := config.UpdateGroupOrder(order); err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "groupOrder": order})
 }
 
 func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
@@ -4798,8 +4832,9 @@ func applyProxyConfig(proxyURL string) {
 // apiGetProxy 获取当前代理配置
 func (h *Handler) apiGetProxy(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"proxyURL": config.GetProxyURL(),
-		"proxies":  config.GetSavedProxies(),
+		"proxyURL":   config.GetProxyURL(),
+		"proxies":    config.GetSavedProxies(),
+		"groupOrder": config.GetGroupOrder(),
 	})
 }
 

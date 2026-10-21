@@ -160,7 +160,7 @@ You can save several proxies by name and pick one as the global proxy. Accounts 
 
 When adding an account, you can pick a saved proxy (or the global default) for all of its login and token requests; the choice is saved as that account's proxy.
 
-The account list groups cards by outbound proxy (default first, then saved proxies), with a remaining-credits total per group. Cards come in large, medium (no stats row), or small (one row) sizes, chosen in the toolbar and kept per browser. Drag a card's grip handle within its group to set the scheduling order: the group's usable accounts get priority 1, 2, and so on, and accounts that are out of credits or disabled sort to the end.
+The account list groups cards by outbound proxy (default first, then saved proxies), with a remaining-credits total per group. Cards come in large, medium (no stats row), or small (one row) sizes, chosen in the toolbar and kept per browser. Drag a card's grip handle within its group to set the scheduling order: the group's usable accounts get priority 1, 2, and so on, and accounts that are out of credits or disabled sort to the end. Groups can be dragged by their header to change the order they are shown in, and a group with no usable accounts starts collapsed; this order is display only, and scheduling still uses the priority numbers alone.
 
 **Test** sends one request to the Kiro host (`q.us-east-1.amazonaws.com`) through the proxy and shows the latency. Any HTTP status counts as connected. Testing an empty field checks the direct route.
 
