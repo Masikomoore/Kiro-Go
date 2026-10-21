@@ -169,6 +169,7 @@ func classifyUpstreamError(err error) upstreamErrorClass {
 		return upstreamErrProfileUnavailable
 	case errors.Is(err, errKiroEventStreamUpstream),
 		errors.Is(err, errEmptyKiroStream),
+		errors.Is(err, errKiroStreamIdle),
 		errors.Is(err, errInvalidKiroEventStream),
 		errors.Is(err, errIncompleteKiroToolInput):
 		return upstreamErrTransient

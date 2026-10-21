@@ -33,8 +33,11 @@ const (
 	maxStreamAttemptsPerEndpoint = 2
 	maxEventStreamMessageSize    = 16 * 1024 * 1024
 	// streamClientTimeout is the total deadline for one Kiro stream, from
-	// dial through the last response byte. It is not an idle timeout.
-	streamClientTimeout = 10 * time.Minute
+	// dial through the last response byte: only a backstop, since effort=max
+	// turns on large prompts stream reasoning for over 10 minutes (live: three
+	// resends of one turn each cut at 600 s mid-reasoning). Stalls are caught
+	// by streamIdleTimeout.
+	streamClientTimeout = 30 * time.Minute
 )
 
 var (
@@ -42,8 +45,12 @@ var (
 	errIncompleteKiroToolInput = errors.New("upstream stream ended with incomplete tool input")
 	errInvalidKiroEventStream  = errors.New("invalid upstream event stream")
 	errKiroEventStreamUpstream = errors.New("upstream event stream error")
-	streamRetryWait            = waitForStreamRetry
-	resolveKiroEndpoints       = endpointsForAccount
+	errKiroStreamIdle          = errors.New("upstream stream stalled")
+	// streamIdleTimeout aborts an attempt that receives no byte for this long,
+	// counted from sending the request.
+	streamIdleTimeout    = 2 * time.Minute
+	streamRetryWait      = waitForStreamRetry
+	resolveKiroEndpoints = endpointsForAccount
 )
 
 // Endpoint configuration (auto-fallback on quota exhaustion).
@@ -546,9 +553,23 @@ endpointLoop:
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			// Each attempt is cancelled once no byte arrives for
+			// streamIdleTimeout; endAttempt reports that as errKiroStreamIdle.
+			attemptCtx, cancelAttempt := context.WithCancelCause(ctx)
+			idle := streamIdleTimeout
+			stall := time.AfterFunc(idle, func() { cancelAttempt(errKiroStreamIdle) })
+			endAttempt := func(err error) error {
+				stall.Stop()
+				if err != nil && ctx.Err() == nil && errors.Is(context.Cause(attemptCtx), errKiroStreamIdle) {
+					err = fmt.Errorf("%w: no data for %s", errKiroStreamIdle, idle)
+				}
+				cancelAttempt(nil)
+				return err
+			}
 			// Requests and bodies cannot be reused after an HTTP attempt.
-			req, err := http.NewRequestWithContext(ctx, "POST", epURL, bytes.NewReader(reqBody))
+			req, err := http.NewRequestWithContext(attemptCtx, "POST", epURL, bytes.NewReader(reqBody))
 			if err != nil {
+				endAttempt(nil)
 				lastErr = err
 				continue endpointLoop
 			}
@@ -577,6 +598,7 @@ endpointLoop:
 			sentAt := time.Now()
 			resp, err := GetClientForProxy(ResolveAccountProxyURL(account)).Do(req)
 			if err != nil {
+				err = endAttempt(err)
 				lastErr = err
 				logger.Warnf("[KiroAPI] Endpoint %s failed: %v", ep.Name, err)
 				if cliTrial && ctx.Err() == nil {
@@ -591,6 +613,7 @@ endpointLoop:
 			if resp.StatusCode != 200 {
 				errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 				resp.Body.Close()
+				endAttempt(nil)
 				httpErr := newKiroHTTPError(resp, ep.Name, errBody)
 				lastErr = httpErr
 				class := classifyKiroHTTPError(resp.StatusCode, httpErr.Body)
@@ -616,7 +639,7 @@ endpointLoop:
 					callback.OnResponseBody()
 				}
 			}
-			body := &firstByteReader{r: resp.Body, notify: onFirstByte}
+			body := &firstByteReader{r: &idleResetReader{r: resp.Body, timer: stall, idle: idle}, notify: onFirstByte}
 			usageLog := newUpstreamUsageLog()
 			streamCallback := KiroStreamCallback{}
 			if callback != nil {
@@ -625,6 +648,7 @@ endpointLoop:
 			streamCallback.OnRawEvent = usageLog.observe
 			emitted, err := parseEventStreamTracked(body, &streamCallback)
 			resp.Body.Close()
+			err = endAttempt(err)
 			usageLog.log(shortConversationID(payload), ep.Name)
 			logger.Infof("[KiroAPI] timing conv=%s account=%s endpoint=%s bytes=%d prep=%dms headers=%dms firstByte=%dms stream=%dms ok=%t",
 				shortConversationID(payload), accountEmailForLog(account), ep.Name, len(reqBody), prepDur.Milliseconds(), headersDur.Milliseconds(),
@@ -672,6 +696,21 @@ endpointLoop:
 		return lastErr
 	}
 	return fmt.Errorf("all endpoints failed")
+}
+
+// idleResetReader re-arms the stall timer whenever bytes arrive.
+type idleResetReader struct {
+	r     io.Reader
+	timer *time.Timer
+	idle  time.Duration
+}
+
+func (i *idleResetReader) Read(p []byte) (int, error) {
+	n, err := i.r.Read(p)
+	if n > 0 {
+		i.timer.Reset(i.idle)
+	}
+	return n, err
 }
 
 func tryNextEndpointAfter(class upstreamErrorClass) bool {

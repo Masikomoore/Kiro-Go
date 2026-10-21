@@ -914,3 +914,86 @@ func kiroStreamTestResponse(body io.Reader) *http.Response {
 		Header:     make(http.Header),
 	}
 }
+
+// pacedBody serves frames gap apart, then either ends or, with stall, blocks
+// until the request is cancelled, like a Kiro stream that stops sending.
+type pacedBody struct {
+	ctx    context.Context
+	frames [][]byte
+	gap    time.Duration
+	stall  bool
+	cur    []byte
+}
+
+func (b *pacedBody) Read(p []byte) (int, error) {
+	if len(b.cur) == 0 {
+		if len(b.frames) == 0 {
+			if b.stall {
+				<-b.ctx.Done()
+				return 0, b.ctx.Err()
+			}
+			return 0, io.EOF
+		}
+		select {
+		case <-time.After(b.gap):
+		case <-b.ctx.Done():
+			return 0, b.ctx.Err()
+		}
+		b.cur, b.frames = b.frames[0], b.frames[1:]
+	}
+	n := copy(p, b.cur)
+	b.cur = b.cur[n:]
+	return n, nil
+}
+
+func setStreamIdleTimeoutForTest(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := streamIdleTimeout
+	streamIdleTimeout = d
+	t.Cleanup(func() { streamIdleTimeout = old })
+}
+
+// effort=max turns stream reasoning for over 10 minutes; the old total
+// deadline cut them at 600 s. A stream that keeps sending must run past the
+// idle timeout.
+func TestCallKiroAPIKeepsStreamThatKeepsSending(t *testing.T) {
+	setStreamIdleTimeoutForTest(t, 80*time.Millisecond)
+	installKiroStreamTestClient(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var frames [][]byte
+		for i := 0; i < 6; i++ {
+			frames = append(frames, awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "x"}))
+		}
+		return kiroStreamTestResponse(&pacedBody{ctx: req.Context(), frames: frames, gap: 40 * time.Millisecond}), nil
+	}))
+	var text string
+	err := CallKiroAPI(newKiroRetryTestAPIKeyAccount("us-east-1"), newKiroRetryTestPayload(), &KiroStreamCallback{
+		OnText: func(chunk string, _ bool) { text += chunk },
+	})
+	if err != nil {
+		t.Fatalf("a stream sending every 40 ms must not hit the 80 ms idle timeout: %v", err)
+	}
+	if text != "xxxxxx" {
+		t.Fatalf("text = %q, want all six chunks", text)
+	}
+}
+
+func TestCallKiroAPIAbortsStalledStream(t *testing.T) {
+	setStreamIdleTimeoutForTest(t, 80*time.Millisecond)
+	installKiroStreamTestClient(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		frames := [][]byte{awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "partial"})}
+		return kiroStreamTestResponse(&pacedBody{ctx: req.Context(), frames: frames, stall: true}), nil
+	}))
+	start := time.Now()
+	err := CallKiroAPI(newKiroRetryTestAPIKeyAccount("us-east-1"), newKiroRetryTestPayload(), &KiroStreamCallback{
+		OnText: func(string, bool) {},
+	})
+	if !errors.Is(err, errKiroStreamIdle) {
+		t.Fatalf("err = %v, want errKiroStreamIdle", err)
+	}
+	if classifyUpstreamError(err) != upstreamErrTransient {
+		t.Fatalf("a stalled stream must classify as transient, got %v", classifyUpstreamError(err))
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("stall detected after %s, want about the idle timeout", elapsed)
+	}
+}
