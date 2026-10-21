@@ -1,5 +1,5 @@
 {
-  "version": "1.1.7",
-  "changelog": "✨ Added and fixed several improvements across the project.\n✨ 新增并修复了一些内容，包含若干功能改进与问题修复。",
+  "version": "1.2.0",
+  "changelog": "✨ xclis fork 1.2.0: one account per conversation; prompt-cache usage aligned with Kiro billing; per-account egress proxies (pick one when adding an account); 2-minute idle timeout instead of a fixed stream deadline, effort=max sent as xhigh, billed reasoning-only turns end as max_tokens; 2 MB request limit; account panel with egress groups, drag-to-order priority, card sizes and quota reset countdown.\n✨ xclis 分支 1.2.0：同一对话固定一个账号；缓存计费与 Kiro 实际扣费对齐；账号可单独绑定出口代理（添加账号时即可选择）；流式改为 2 分钟空闲超时，effort=max 降为 xhigh，只推理却被计费的回合按 max_tokens 正常结束；请求上限放宽到 2 MB；管理面板支持按出口分组、拖动排序优先级、三档卡片和额度重置倒计时。",
   "download": "https://github.com/Masikomoore/Kiro-Go"
 }
