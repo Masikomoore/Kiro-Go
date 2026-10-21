@@ -712,6 +712,17 @@ select.custom-select-native {
   color: #ffffff;
   border-color: #0d9488;
 }
+/* Accounts that use a saved outbound proxy: light tint so they stand out without shouting. */
+.badge-proxy {
+  background: #e0f2fe;
+  color: #075985;
+  border-color: #7dd3fc;
+}
+[data-theme="dark"] .badge-proxy {
+  background: rgba(14, 165, 233, 0.15);
+  color: #7dd3fc;
+  border-color: rgba(14, 165, 233, 0.4);
+}
 
 /* Switches */
 .switch {

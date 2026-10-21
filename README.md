@@ -156,7 +156,7 @@ OpenAI `/v1/chat/completions` and `/v1/responses` report no cache fields. The sw
 
 For users in restricted network regions, configure an outbound proxy in the admin panel under **Settings - Outbound Proxy Settings**. Supports SOCKS5 and HTTP proxies.
 
-You can save several proxies by name and pick one as the global proxy. Accounts without their own proxy use the global one. An account's own proxy can be picked from the saved list in its detail panel.
+You can save several proxies by name and pick one as the global proxy. Accounts without their own proxy use the global one. An account's own proxy can be picked from the saved list in its detail panel. Accounts that use a saved proxy show its name as a tag on their card, and renaming a proxy's address moves the accounts that use it to the new address.
 
 When adding an account, you can pick a saved proxy (or the global default) for all of its login and token requests; the choice is saved as that account's proxy.
 

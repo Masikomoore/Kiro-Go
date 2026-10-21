@@ -16,6 +16,7 @@
   if (!supportedLangs.includes(currentLang)) currentLang = 'zh';
   const dict = { en: null, zh: null, vi: null };
   let accountsData = [];
+  let accountsLoaded = false;
   const selectedAccounts = new Set();
   let filterKeyword = '';
   let filterStatus = 'all';
@@ -807,6 +808,7 @@
   async function loadAccounts() {
     const res = await api('/accounts');
     accountsData = await res.json();
+    accountsLoaded = true;
     renderAccounts();
   }
 
@@ -981,6 +983,7 @@
         weightBadge +
         priorityBadge +
         overageBadge +
+        getProxyBadge(a) +
         '<span class="badge badge-info">' + escapeHtml(formatAuthMethod(a.provider || a.authMethod)) + '</span>' +
         getStatusBadge(a) +
         '</div>' +
@@ -1275,7 +1278,9 @@
       '<input type="text" id="proxyURLInput" list="savedProxyOptions" value="' + escapeAttr(a.proxyURL || '') + '" placeholder="socks5://host:port" />' +
       '<button class="btn btn-sm btn-outline" data-detail-action="testProxyURL" data-id="' + idAttr + '" type="button">' + escapeHtml(t('settings.proxyTest')) + '</button>' +
       '<button class="btn btn-sm btn-primary" data-detail-action="saveProxyURL" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.save')) + '</button>' +
-      '</div><p class="help-block" id="proxyURLResult"></p><p class="help-block">' + escapeHtml(t('detail.proxyHint')) + '</p></div>' +
+      '</div><p class="help-block" id="proxyURLResult"></p>' +
+      (a.proxyURL ? '<p class="help-block" title="' + escapeAttr(maskProxyURL(a.proxyURL)) + '">' + escapeHtml(t('detail.proxyCurrent', getProxyLabel(a.proxyURL))) + '</p>' : '') +
+      '<p class="help-block">' + escapeHtml(t('detail.proxyHint')) + '</p></div>' +
 
       '<div class="detail-section"><h4>' + escapeHtml(t('detail.subscription')) + '</h4><div class="detail-grid">' +
       detailItem(t('detail.subscriptionType'), a.subscriptionTitle || (a.subscriptionType ? formatSubscriptionLabel(a.subscriptionType) : '-')) +
@@ -1661,6 +1666,8 @@
     activeProxyURL = d.proxyURL || '';
     savedProxies = Array.isArray(d.proxies) ? d.proxies : [];
     renderProxySettings();
+    // Accounts may have loaded before the proxy names arrived; their tags need a re-render.
+    if (accountsLoaded) renderAccounts();
     // A global proxy saved before the list existed: offer it in the form so it can be named and saved.
     if (activeProxyURL && !savedProxies.some(p => p.url === activeProxyURL)) fillProxyForm({ name: '', url: activeProxyURL });
   }
@@ -1670,6 +1677,25 @@
       if (u.password) u.password = '***';
       return decodeURIComponent(u.toString()).replace(/\/$/, '');
     } catch (e) { return url; }
+  }
+  // Name of the saved proxy with this exact URL, or "unsaved" plus host:port (never credentials).
+  function getProxyLabel(url) {
+    const saved = savedProxies.find(p => p.url === url);
+    if (saved) return saved.name;
+    let host = '';
+    try { host = new URL(url).host; } catch (e) { /* no host to show */ }
+    return t('accounts.proxyTagUnsaved') + (host ? ' ' + host : '');
+  }
+  function getProxyBadge(a) {
+    if (!a.proxyURL) return '';
+    return '<span class="badge badge-proxy" title="' + escapeAttr(maskProxyURL(a.proxyURL)) + '">' +
+      '<i class="fa-solid fa-network-wired" aria-hidden="true"></i>' + escapeHtml(getProxyLabel(a.proxyURL)) + '</span>';
+  }
+  // Accounts whose own proxy is exactly this URL, read fresh because accounts and settings load in parallel.
+  async function listAccountsUsingProxy(url) {
+    const res = await api('/accounts');
+    const list = await res.json();
+    return list.filter(a => a.proxyURL === url);
   }
   function renderProxySettings() {
     const sel = $('proxyActiveSelect');
@@ -1751,6 +1777,7 @@
     if (!d.success) { toast(t('common.saveFailed') + ': ' + (d.error || ''), 'error'); return false; }
     savedProxies = list;
     renderProxySettings();
+    if (accountsLoaded) renderAccounts();
     if (okMsg) toast(okMsg, 'success');
     return true;
   }
@@ -1775,7 +1802,25 @@
     if (!(await putSavedProxies(list, t('settings.proxySaved')))) return;
     // Editing the proxy in use as global changes the global proxy too.
     if (old && old.url === activeProxyURL && url !== activeProxyURL) await setActiveProxy(url);
+    // Accounts keep the address they were given; move them along when the address itself changed.
+    if (old && old.url !== url) await moveAccountsToProxyURL(old.url, url);
     fillProxyForm(null);
+  }
+  async function moveAccountsToProxyURL(oldURL, newURL) {
+    const accounts = await listAccountsUsingProxy(oldURL);
+    if (!accounts.length) return;
+    let ok = 0;
+    let fail = 0;
+    for (const a of accounts) {
+      try {
+        const res = await api('/accounts/' + a.id, { method: 'PUT', body: JSON.stringify({ proxyURL: newURL }) });
+        const d = await res.json();
+        if (d.success) ok++; else fail++;
+      } catch (e) { fail++; }
+    }
+    await loadAccounts();
+    const msg = t('settings.proxyAccountsUpdated', ok) + (fail ? '; ' + t('settings.proxyAccountsFailed', fail) : '');
+    toast(msg, fail ? 'warning' : 'success');
   }
   async function applyActiveProxy() {
     if (await setActiveProxy($('proxyActiveSelect').value)) toast(t('settings.proxyApplied'), 'success');
@@ -1791,7 +1836,8 @@
     else if (action === 'edit') fillProxyForm(p);
     else if (action === 'delete') {
       if (p.url === activeProxyURL) { toast(t('settings.proxyDeleteInUse'), 'warning'); return; }
-      if (!confirm(t('settings.proxyDeleteConfirm', p.name))) return;
+      const using = (await listAccountsUsingProxy(p.url)).length;
+      if (!confirm(using ? t('settings.proxyDeleteConfirmInUse', p.name, using) : t('settings.proxyDeleteConfirm', p.name))) return;
       await putSavedProxies(savedProxies.filter((_, i) => i !== index), t('settings.proxyDeleted'));
       if (proxyEditingName === p.name) fillProxyForm(null);
     }
