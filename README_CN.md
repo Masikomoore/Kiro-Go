@@ -176,6 +176,8 @@ API Key 账号会走 Kiro CLI runtime（`https://runtime.{region}.kiro.dev/`）�
 
 设置保存后即时生效，无需重启服务。
 
+代理连不上时，绑定它的账号会被跳过，请求改走其他账号；该代理在设置和账号卡片上标为“不可用”，每 30 秒探测一次，恢复后自动放回。超时可用 `upstreamConnectTimeoutSeconds` 和 `proxyDownSeconds` 调整。
+
 ## 环境变量
 
 | 变量 | 说明 | 默认值 |

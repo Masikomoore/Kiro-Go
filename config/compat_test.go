@@ -66,3 +66,27 @@ func TestMaxPayloadKB(t *testing.T) {
 		t.Fatal("capMaxEffort must default on")
 	}
 }
+
+func TestProxyFailoverSettingsDefaultsAndRanges(t *testing.T) {
+	def := ResolveCompatSettings(CompatSettings{})
+	if def.UpstreamConnectTimeout != 15*time.Second || def.ProxyDownCooldown != 2*time.Minute {
+		t.Fatalf("defaults = connect %s, proxy down %s; want 15s and 2m", def.UpstreamConnectTimeout, def.ProxyDownCooldown)
+	}
+	set := ResolveCompatSettings(CompatSettings{UpstreamConnectTimeoutSeconds: 20, ProxyDownSeconds: 300})
+	if set.UpstreamConnectTimeout != 20*time.Second || set.ProxyDownCooldown != 5*time.Minute {
+		t.Fatalf("configured = connect %s, proxy down %s", set.UpstreamConnectTimeout, set.ProxyDownCooldown)
+	}
+
+	valid := []CompatSettings{{}, {UpstreamConnectTimeoutSeconds: 5}, {UpstreamConnectTimeoutSeconds: 60}, {ProxyDownSeconds: 30}, {ProxyDownSeconds: 1800}}
+	for _, s := range valid {
+		if err := ValidateCompatSettings(s); err != nil {
+			t.Errorf("ValidateCompatSettings(%+v) = %v, want nil", s, err)
+		}
+	}
+	invalid := []CompatSettings{{UpstreamConnectTimeoutSeconds: 4}, {UpstreamConnectTimeoutSeconds: 61}, {ProxyDownSeconds: 29}, {ProxyDownSeconds: 1801}}
+	for _, s := range invalid {
+		if err := ValidateCompatSettings(s); err == nil {
+			t.Errorf("ValidateCompatSettings(%+v) = nil, want an error", s)
+		}
+	}
+}

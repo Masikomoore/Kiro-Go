@@ -1290,6 +1290,9 @@ func UpdateEndpointFallback(enabled bool) error {
 func GetProxyURL() string {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return ""
+	}
 	return cfg.ProxyURL
 }
 

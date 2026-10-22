@@ -2,12 +2,17 @@
 package auth
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// authDialTimeout bounds the TCP dial and TLS handshake of auth requests, so an
+// unreachable proxy fails in seconds instead of holding a token refresh.
+const authDialTimeout = 10 * time.Second
 
 // 全局 HTTP 客户端存储，支持运行时代理重配置
 var httpClientStore atomic.Pointer[http.Client]
@@ -44,6 +49,8 @@ func GetAuthClientForProxy(proxyURL string) *http.Client {
 // buildAuthTransport 构建带可选代理的 Transport
 func buildAuthTransport(proxyURL string) *http.Transport {
 	t := &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: authDialTimeout, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: authDialTimeout,
 		MaxIdleConns:        50,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,

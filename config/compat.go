@@ -14,6 +14,15 @@ type CompatSettings struct {
 	// which throttles one account rather than the whole upstream. Default 10.
 	AccountThrottleCooldownMinutes int `json:"accountThrottleCooldownMinutes,omitempty"`
 
+	// UpstreamConnectTimeoutSeconds bounds how long one Kiro attempt may take
+	// to connect (through the proxy when one is set) before it fails over.
+	// Default 15; range 5-60.
+	UpstreamConnectTimeoutSeconds int `json:"upstreamConnectTimeoutSeconds,omitempty"`
+	// ProxyDownSeconds is how long an outbound proxy stays marked down after
+	// an egress failure, before a recovery probe or expiry lets it back in.
+	// Default 120; range 30-1800.
+	ProxyDownSeconds int `json:"proxyDownSeconds,omitempty"`
+
 	// Default-on switches; set to false to turn one off.
 	NativeReasoningEffort *bool `json:"nativeReasoningEffort,omitempty"`
 	ToolChunkingHints     *bool `json:"toolChunkingHints,omitempty"`
@@ -82,6 +91,12 @@ const (
 	SchedulingPriority = "priority"
 
 	defaultAccountThrottleCooldown = 10 * time.Minute
+	defaultUpstreamConnectTimeout  = 15 * time.Second
+	minUpstreamConnectSeconds      = 5
+	maxUpstreamConnectSeconds      = 60
+	defaultProxyDownCooldown       = 2 * time.Minute
+	minProxyDownSeconds            = 30
+	maxProxyDownSeconds            = 1800
 	defaultPromptCacheMaxEntries   = 20000
 	defaultMaxPayloadKB            = 2048
 	minMaxPayloadKB                = 256
@@ -91,6 +106,8 @@ const (
 // CompatConfig is CompatSettings with defaults applied.
 type CompatConfig struct {
 	AccountThrottleCooldown  time.Duration
+	UpstreamConnectTimeout   time.Duration
+	ProxyDownCooldown        time.Duration
 	NativeReasoningEffort    bool
 	ToolChunkingHints        bool
 	ThinkingSignature        bool
@@ -123,6 +140,8 @@ func boolOrDefault(v *bool, def bool) bool {
 func ResolveCompatSettings(s CompatSettings) CompatConfig {
 	out := CompatConfig{
 		AccountThrottleCooldown:  defaultAccountThrottleCooldown,
+		UpstreamConnectTimeout:   defaultUpstreamConnectTimeout,
+		ProxyDownCooldown:        defaultProxyDownCooldown,
 		NativeReasoningEffort:    boolOrDefault(s.NativeReasoningEffort, true),
 		ToolChunkingHints:        boolOrDefault(s.ToolChunkingHints, true),
 		ThinkingSignature:        boolOrDefault(s.ThinkingSignature, true),
@@ -148,6 +167,12 @@ func ResolveCompatSettings(s CompatSettings) CompatConfig {
 	}
 	if s.AccountThrottleCooldownMinutes > 0 {
 		out.AccountThrottleCooldown = time.Duration(s.AccountThrottleCooldownMinutes) * time.Minute
+	}
+	if s.UpstreamConnectTimeoutSeconds > 0 {
+		out.UpstreamConnectTimeout = time.Duration(s.UpstreamConnectTimeoutSeconds) * time.Second
+	}
+	if s.ProxyDownSeconds > 0 {
+		out.ProxyDownCooldown = time.Duration(s.ProxyDownSeconds) * time.Second
 	}
 	switch v := strings.ToLower(strings.TrimSpace(s.BuilderIDPlaceholderArn)); v {
 	case PlaceholderArnOnDemand, PlaceholderArnAlways:
@@ -198,6 +223,12 @@ func ValidateCompatSettings(s CompatSettings) error {
 	}
 	if s.PromptCacheMaxEntries < 0 {
 		return fmt.Errorf("promptCacheMaxEntries must not be negative")
+	}
+	if s.UpstreamConnectTimeoutSeconds != 0 && (s.UpstreamConnectTimeoutSeconds < minUpstreamConnectSeconds || s.UpstreamConnectTimeoutSeconds > maxUpstreamConnectSeconds) {
+		return fmt.Errorf("upstreamConnectTimeoutSeconds must be between %d and %d", minUpstreamConnectSeconds, maxUpstreamConnectSeconds)
+	}
+	if s.ProxyDownSeconds != 0 && (s.ProxyDownSeconds < minProxyDownSeconds || s.ProxyDownSeconds > maxProxyDownSeconds) {
+		return fmt.Errorf("proxyDownSeconds must be between %d and %d", minProxyDownSeconds, maxProxyDownSeconds)
 	}
 	if s.MaxPayloadKB != 0 && (s.MaxPayloadKB < minMaxPayloadKB || s.MaxPayloadKB > maxMaxPayloadKB) {
 		return fmt.Errorf("maxPayloadKB must be between %d and %d", minMaxPayloadKB, maxMaxPayloadKB)

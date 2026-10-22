@@ -4,6 +4,7 @@ import (
 	"errors"
 	"kiro-go/config"
 	"kiro-go/logger"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -182,6 +183,11 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 	if account == nil || err == nil {
 		return
 	}
+	// An egress failure says the account's proxy is unreachable, not that the
+	// account is bad: open the proxy breaker and leave the account alone.
+	if h.markProxyEgressFailure(account, err) {
+		return
+	}
 
 	switch classifyUpstreamError(err) {
 	case upstreamErrIntegrity, upstreamErrClientInvalid, upstreamErrContextTooLong,
@@ -232,6 +238,41 @@ func (h *Handler) handleAccountFailureMessage(account *config.Account, errMsg st
 	default:
 		h.pool.RecordError(account.ID, false)
 	}
+}
+
+// markProxyEgressFailure opens the breaker on the account's proxy when err is
+// an egress failure behind that proxy. Every account on the same proxy is then
+// skipped until the breaker closes. It reports whether err was such a failure.
+// A direct account (no proxy) is not handled here.
+func (h *Handler) markProxyEgressFailure(account *config.Account, err error) bool {
+	if !isEgressFailure(err) {
+		return false
+	}
+	proxyURL := ResolveAccountProxyURL(account)
+	if proxyURL == "" {
+		return false
+	}
+	until := time.Now().Add(config.GetCompatConfig().ProxyDownCooldown)
+	lastErr := redactProxyUserinfo(err.Error(), proxyURL)
+	if h.pool.MarkProxyDown(proxyURL, until, lastErr) {
+		logger.Warnf("[ProxyHealth] %s down: %s; skipping %d accounts until %s",
+			proxyDisplayName(proxyURL), lastErr, h.pool.AccountsBehindProxy(proxyURL), until.Format(time.RFC3339))
+	}
+	return true
+}
+
+// proxyDisplayName names a proxy for logs: its saved name, else scheme and host
+// with any credentials left out.
+func proxyDisplayName(proxyURL string) string {
+	for _, p := range config.GetSavedProxies() {
+		if p.URL == proxyURL {
+			return p.Name
+		}
+	}
+	if u, err := url.Parse(proxyURL); err == nil && u.Host != "" {
+		return u.Scheme + "://" + u.Host
+	}
+	return "proxy"
 }
 
 type upstreamAction int

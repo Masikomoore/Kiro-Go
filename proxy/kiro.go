@@ -14,6 +14,7 @@ import (
 	"kiro-go/logger"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -38,6 +39,9 @@ const (
 	// resends of one turn each cut at 600 s mid-reasoning). Stalls are caught
 	// by streamIdleTimeout.
 	streamClientTimeout = 30 * time.Minute
+	// transportDialTimeout bounds the TCP dial (to the proxy or to Kiro) and
+	// the TLS handshake of every Kiro transport.
+	transportDialTimeout = 10 * time.Second
 )
 
 var (
@@ -46,11 +50,18 @@ var (
 	errInvalidKiroEventStream  = errors.New("invalid upstream event stream")
 	errKiroEventStreamUpstream = errors.New("upstream event stream error")
 	errKiroStreamIdle          = errors.New("upstream stream stalled")
+	// errKiroConnect means an attempt could not connect to Kiro, directly or
+	// through its proxy, within the connect limit. Unlike errKiroStreamIdle it
+	// says nothing about the upstream, only about the route.
+	errKiroConnect = errors.New("cannot reach upstream through proxy")
 	// streamIdleTimeout aborts an attempt that receives no byte for this long,
 	// counted from sending the request.
 	streamIdleTimeout    = 2 * time.Minute
 	streamRetryWait      = waitForStreamRetry
 	resolveKiroEndpoints = endpointsForAccount
+	// upstreamConnectTimeout bounds how long one attempt may take to connect.
+	// It is a variable so tests can shorten it.
+	upstreamConnectTimeout = func() time.Duration { return config.GetCompatConfig().UpstreamConnectTimeout }
 )
 
 // Endpoint configuration (auto-fallback on quota exhaustion).
@@ -147,8 +158,12 @@ func ResolveAccountProxyURL(account *config.Account) string {
 }
 
 // buildKiroTransport constructs an HTTP Transport with optional outbound proxy support.
+// Dial and TLS handshake are bounded so a dead proxy host fails in seconds
+// instead of waiting for the OS connect timeout.
 func buildKiroTransport(proxyURL string) *http.Transport {
 	t := &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: transportDialTimeout, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: transportDialTimeout,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
@@ -558,16 +573,29 @@ endpointLoop:
 			attemptCtx, cancelAttempt := context.WithCancelCause(ctx)
 			idle := streamIdleTimeout
 			stall := time.AfterFunc(idle, func() { cancelAttempt(errKiroStreamIdle) })
+			// The connect timer runs until the transport has a connection
+			// (GotConn), so a dead proxy fails in seconds, not after the idle timeout.
+			connectLimit := upstreamConnectTimeout()
+			connectTimer := time.AfterFunc(connectLimit, func() { cancelAttempt(errKiroConnect) })
 			endAttempt := func(err error) error {
 				stall.Stop()
-				if err != nil && ctx.Err() == nil && errors.Is(context.Cause(attemptCtx), errKiroStreamIdle) {
-					err = fmt.Errorf("%w: no data for %s", errKiroStreamIdle, idle)
+				connectTimer.Stop()
+				if err != nil && ctx.Err() == nil {
+					switch cause := context.Cause(attemptCtx); {
+					case errors.Is(cause, errKiroConnect):
+						err = fmt.Errorf("%w: no connection within %s", errKiroConnect, connectLimit)
+					case errors.Is(cause, errKiroStreamIdle):
+						err = fmt.Errorf("%w: no data for %s", errKiroStreamIdle, idle)
+					}
 				}
 				cancelAttempt(nil)
 				return err
 			}
+			trace := &httptrace.ClientTrace{
+				GotConn: func(httptrace.GotConnInfo) { connectTimer.Stop() },
+			}
 			// Requests and bodies cannot be reused after an HTTP attempt.
-			req, err := http.NewRequestWithContext(attemptCtx, "POST", epURL, bytes.NewReader(reqBody))
+			req, err := http.NewRequestWithContext(httptrace.WithClientTrace(attemptCtx, trace), "POST", epURL, bytes.NewReader(reqBody))
 			if err != nil {
 				endAttempt(nil)
 				lastErr = err
@@ -596,11 +624,20 @@ endpointLoop:
 			req.Header.Set("Amz-Sdk-Invocation-Id", invocationID)
 
 			sentAt := time.Now()
-			resp, err := GetClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+			accountProxy := ResolveAccountProxyURL(account)
+			resp, err := GetClientForProxy(accountProxy).Do(req)
+			// Do returns once the connection is up and the headers are in:
+			// the connect phase is over, and the stall timer takes over.
+			connectTimer.Stop()
 			if err != nil {
 				err = endAttempt(err)
 				lastErr = err
 				logger.Warnf("[KiroAPI] Endpoint %s failed: %v", ep.Name, err)
+				// Every endpoint of this account shares the same proxy, so an
+				// egress failure there repeats: hand the account back now.
+				if accountProxy != "" && isEgressFailure(err) {
+					return err
+				}
 				if cliTrial && ctx.Err() == nil {
 					continue endpointLoop
 				}

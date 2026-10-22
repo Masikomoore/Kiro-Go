@@ -1122,6 +1122,7 @@
     const filtering = isAccountFilterActive();
     const headerAttrs = filtering ? '' : ' draggable="true" title="' + escapeAttr(t('accounts.groupDragHint')) + '"';
     const toggleLabel = t(collapsed ? 'accounts.groupExpand' : 'accounts.groupCollapse');
+    const groupDown = proxyDownInfo(group.key || activeProxyURL);
     return '' +
       '<section class="account-group' + (collapsed ? ' is-collapsed' : '') + '" data-group-key="' + escapeAttr(group.key) + '">' +
       '<div class="account-group-header"' + headerAttrs + '>' +
@@ -1132,6 +1133,7 @@
       '<span class="account-group-name">' + escapeHtml(group.label) + '</span>' +
       '<span class="account-group-meta">' + escapeHtml(t('accounts.groupCount', String(group.accounts.length))) +
       ' · ' + escapeHtml(t('accounts.groupCredits', credits.toFixed(1))) + '</span>' +
+      (groupDown ? ' <span class="badge badge-error" title="' + escapeAttr(groupDown.lastError || '') + '">' + escapeHtml(t('accounts.groupProxyDown')) + '</span>' : '') +
       '</div>' +
       (collapsed ? '' : '<div class="account-group-cards">' + group.accounts.map(a => renderAccountCard(a)).join('') + '</div>') +
       '</section>';
@@ -1937,6 +1939,8 @@
   let activeProxyURL = '';
   let savedProxies = [];
   let proxyEditingName = '';
+  // Open proxy breakers from GET /proxy: [{url, name, down, since, until, lastError}].
+  let proxyHealth = [];
   const proxyTestResults = {};
   async function loadProxyConfig() {
     const res = await api('/proxy');
@@ -1944,6 +1948,7 @@
     activeProxyURL = d.proxyURL || '';
     savedProxies = Array.isArray(d.proxies) ? d.proxies : [];
     accountGroupOrder = Array.isArray(d.groupOrder) ? d.groupOrder : [];
+    proxyHealth = Array.isArray(d.proxyHealth) ? d.proxyHealth : [];
     renderProxySettings();
     // Accounts may have loaded before the proxy names arrived; their tags need a re-render.
     if (accountsLoaded) renderAccounts();
@@ -1965,9 +1970,31 @@
     try { host = new URL(url).host; } catch (e) { /* no host to show */ }
     return t('accounts.proxyTagUnsaved') + (host ? ' ' + host : '');
   }
+  // The breaker for this proxy while it is still open, else null.
+  function proxyDownInfo(url) {
+    if (!url) return null;
+    const h = proxyHealth.find(x => x.url === url && x.down);
+    return h && Date.parse(h.until) > Date.now() ? h : null;
+  }
+  function proxyDownSecondsLeft(h) {
+    return Math.max(0, Math.ceil((Date.parse(h.until) - Date.now()) / 1000));
+  }
+  // Re-reads only the proxy health, and re-renders just when something changed.
+  async function refreshProxyHealth() {
+    const res = await api('/proxy');
+    const d = await res.json();
+    const next = Array.isArray(d.proxyHealth) ? d.proxyHealth : [];
+    const key = list => JSON.stringify(list.map(h => [h.url, h.until]));
+    if (key(next) === key(proxyHealth)) return;
+    proxyHealth = next;
+    renderProxySettings();
+    if (accountsLoaded) renderAccounts();
+  }
   function getProxyBadge(a) {
     if (!a.proxyURL) return '';
-    return '<span class="badge badge-proxy" title="' + escapeAttr(maskProxyURL(a.proxyURL)) + '">' +
+    const down = proxyDownInfo(a.proxyURL);
+    const title = down ? t('accounts.proxyTagDown') + ': ' + (down.lastError || '') : maskProxyURL(a.proxyURL);
+    return '<span class="badge badge-proxy' + (down ? ' is-down' : '') + '" title="' + escapeAttr(title) + '">' +
       '<i class="fa-solid fa-network-wired" aria-hidden="true"></i>' + escapeHtml(getProxyLabel(a.proxyURL)) + '</span>';
   }
   // Accounts whose own proxy is exactly this URL, read fresh because accounts and settings load in parallel.
@@ -1992,9 +2019,12 @@
     } else {
       list.innerHTML = savedProxies.map((p, i) => {
         const active = p.url === activeProxyURL ? ' <span class="badge badge-success">' + escapeHtml(t('settings.proxyInUse')) + '</span>' : '';
+        const down = proxyDownInfo(p.url);
+        const downBadge = down ? ' <span class="badge badge-error" title="' + escapeAttr(down.lastError || '') + '">' +
+          escapeHtml(t('settings.proxyUnavailable', String(proxyDownSecondsLeft(down)))) + '</span>' : '';
         return '<div class="flex items-center gap-2" style="flex-wrap:wrap;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid rgba(127,127,127,0.2);">' +
           '<div class="flex items-center gap-2" style="flex-wrap:wrap;">' +
-            '<span class="font-semibold">' + escapeHtml(p.name) + '</span>' + active +
+            '<span class="font-semibold">' + escapeHtml(p.name) + '</span>' + active + downBadge +
             '<span class="text-xs muted-text font-mono">' + escapeHtml(maskProxyURL(p.url)) + '</span>' +
             '<span class="text-xs" id="proxyResult-' + i + '">' + (proxyTestResults[p.url] || '') + '</span>' +
           '</div>' +
@@ -4102,6 +4132,8 @@
     if (password) tryAutoLogin();
     setInterval(() => {
       if (!$('mainPage').classList.contains('hidden')) loadStats();
+      // Breakers open and close between account reloads; keep the proxy badges current.
+      if (!$('mainPage').classList.contains('hidden') && (savedProxies.length || activeProxyURL)) refreshProxyHealth().catch(() => {});
     }, 10000);
   }
 

@@ -309,6 +309,8 @@ func NewHandler() *Handler {
 	}
 	// 启动后台刷新
 	go h.backgroundRefresh()
+	// 探测熔断中的代理，恢复后立即放回账号调度
+	go h.proxyHealthLoop()
 	// 启动后台统计保存 (每30秒保存一次)
 	go h.backgroundStatsSaver()
 	// Per-request usage counters are written in batches, not per request.
@@ -4278,6 +4280,8 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 func compatEffectiveSettings(c config.CompatConfig) map[string]interface{} {
 	return map[string]interface{}{
 		"accountThrottleCooldownMinutes": int(c.AccountThrottleCooldown / time.Minute),
+		"upstreamConnectTimeoutSeconds":  int(c.UpstreamConnectTimeout / time.Second),
+		"proxyDownSeconds":               int(c.ProxyDownCooldown / time.Second),
 		"nativeReasoningEffort":          c.NativeReasoningEffort,
 		"toolChunkingHints":              c.ToolChunkingHints,
 		"thinkingSignature":              c.ThinkingSignature,
@@ -4831,10 +4835,15 @@ func applyProxyConfig(proxyURL string) {
 
 // apiGetProxy 获取当前代理配置
 func (h *Handler) apiGetProxy(w http.ResponseWriter, r *http.Request) {
+	var health []pool.ProxyHealth
+	if h.pool != nil {
+		health = h.pool.ProxyHealthSnapshot()
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"proxyURL":   config.GetProxyURL(),
-		"proxies":    config.GetSavedProxies(),
-		"groupOrder": config.GetGroupOrder(),
+		"proxyURL":    config.GetProxyURL(),
+		"proxies":     config.GetSavedProxies(),
+		"groupOrder":  config.GetGroupOrder(),
+		"proxyHealth": proxyHealthForAdmin(health),
 	})
 }
 

@@ -3,6 +3,9 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"kiro-go/config"
+	"kiro-go/logger"
+	"kiro-go/pool"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,6 +17,13 @@ import (
 const proxyCheckTarget = "https://q.us-east-1.amazonaws.com/"
 
 const proxyCheckTimeout = 15 * time.Second
+
+// proxyHealthProbeInterval is how often each open proxy breaker is probed.
+// Variables so tests can shorten the interval and point the probe elsewhere.
+var (
+	proxyHealthProbeInterval = 30 * time.Second
+	proxyHealthProbeTarget   = proxyCheckTarget
+)
 
 type proxyCheckResult struct {
 	OK        bool   `json:"ok"`
@@ -90,4 +100,56 @@ func redactProxyUserinfo(msg, proxyURL string) string {
 		msg = strings.ReplaceAll(msg, pass, "***")
 	}
 	return msg
+}
+
+// proxyHealthLoop probes every open proxy breaker until the handler stops. A
+// successful probe closes the breaker at once; a failed one extends it, so a
+// proxy that stays dead keeps its accounts skipped.
+func (h *Handler) proxyHealthLoop() {
+	ticker := time.NewTicker(proxyHealthProbeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			h.probeDownProxies()
+		case <-h.stopRefresh:
+			return
+		}
+	}
+}
+
+func (h *Handler) probeDownProxies() {
+	for _, down := range h.pool.ProxyHealthSnapshot() {
+		res := checkProxy(context.Background(), down.URL, proxyHealthProbeTarget)
+		if res.OK {
+			if cleared, ok := h.pool.ClearProxyDown(down.URL); ok {
+				logger.Infof("[ProxyHealth] %s recovered after %s", proxyDisplayName(down.URL), time.Since(cleared.Since).Round(time.Second))
+			}
+			continue
+		}
+		until := time.Now().Add(config.GetCompatConfig().ProxyDownCooldown)
+		h.pool.MarkProxyDown(down.URL, until, redactProxyUserinfo(res.Error, down.URL))
+	}
+}
+
+// proxyHealthForAdmin describes the open proxy breakers for the admin panel.
+// url is the raw proxy URL, the same string GET /proxy and GET /accounts use,
+// so the panel can match it; name is the saved proxy name when there is one.
+func proxyHealthForAdmin(entries []pool.ProxyHealth) []map[string]interface{} {
+	saved := make(map[string]string)
+	for _, p := range config.GetSavedProxies() {
+		saved[p.URL] = p.Name
+	}
+	out := make([]map[string]interface{}, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, map[string]interface{}{
+			"url":       e.URL,
+			"name":      saved[e.URL],
+			"down":      true,
+			"since":     e.Since.Format(time.RFC3339),
+			"until":     e.Until.Format(time.RFC3339),
+			"lastError": e.LastError,
+		})
+	}
+	return out
 }

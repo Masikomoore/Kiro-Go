@@ -170,6 +170,7 @@ func classifyUpstreamError(err error) upstreamErrorClass {
 	case errors.Is(err, errKiroEventStreamUpstream),
 		errors.Is(err, errEmptyKiroStream),
 		errors.Is(err, errKiroStreamIdle),
+		errors.Is(err, errKiroConnect),
 		errors.Is(err, errInvalidKiroEventStream),
 		errors.Is(err, errIncompleteKiroToolInput):
 		return upstreamErrTransient
@@ -179,6 +180,34 @@ func classifyUpstreamError(err error) upstreamErrorClass {
 		return upstreamErrTransient
 	}
 	return upstreamErrOther
+}
+
+// isEgressFailure reports whether err says the route to Kiro is broken rather
+// than the upstream or the account: the connection to the proxy (or the direct
+// dial) failed or timed out, or the proxy refused the CONNECT or SOCKS request.
+// A stalled stream is deliberately not one of them. Headers can take over a
+// minute upstream, and a body stall is an upstream problem.
+func isEgressFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errKiroConnect) {
+		return true
+	}
+	var httpErr *kiroHTTPError
+	if errors.As(err, &httpErr) {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "proxyconnect" {
+		return true
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "proxyconnect") || strings.Contains(msg, "socks connect") {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout() && errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
 func classifyKiroHTTPError(status int, body string) upstreamErrorClass {

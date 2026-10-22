@@ -188,6 +188,8 @@ The `compat` section of `config.json` (also `GET`/`POST /admin/api/settings` wit
 | `maxPayloadKB` | `2048` | Kiro request size (KB, 256–8192) above which old images are dropped, history text compacted, then old turns dropped. Kiro accepted 1.06–1.6 MB requests while the old fixed 900 KB dropped history and cost full cache misses. Lower it if Kiro answers "Input is too long." |
 | `schedulingMode` | `sticky` | Account choice per request. `sticky`: a conversation (Claude Code session, else API key) keeps its account so Kiro's per-account prompt cache hits; it moves on cooldown or failure, and new conversations rotate. `round_robin`: every request moves to the next account. `priority`: always the first ready account (kiro-RS default). Every mode serves the smallest account `priority` tier first. Also in Settings → Account scheduling |
 | `accountThrottleCooldownMinutes` | `10` | Cooldown after a 429 "suspicious activity" response for that account |
+| `upstreamConnectTimeoutSeconds` | `15` | Seconds one Kiro attempt may take to connect (through its proxy) before failing over to another account (5–60). Connected requests are still governed by the 2-minute stall timer |
+| `proxyDownSeconds` | `120` | After a proxy fails to connect, accounts behind it are skipped for this long (30–1800). A background probe clears the mark as soon as the proxy answers again |
 | `structuredToolHistory` | `false` | Experimental: keep tool calls structured in history with placeholder tool specs |
 | `normalizeKiroToolParams` | `false` | Experimental: rename Kiro-style arguments (`path`, `oldStr`, ...) on Claude Code tools |
 | `imageDownscale` | `false` | Experimental: shrink PNG/JPEG over 400KB or 1568px |
@@ -220,6 +222,8 @@ The account list groups cards by outbound proxy (default first, then saved proxi
 **Test** sends one request to the Kiro host (`q.us-east-1.amazonaws.com`) through the proxy and shows the latency. Any HTTP status counts as connected. Testing an empty field checks the direct route.
 
 The global proxy takes effect immediately without restarting.
+
+If a proxy cannot be reached, the accounts behind it are skipped and requests move to accounts that connect directly or through other proxies, instead of waiting out each attempt. The proxy is marked down in Settings and in the account cards, probed every 30 seconds, and used again once it answers. Tune the timings with `upstreamConnectTimeoutSeconds` and `proxyDownSeconds` in the compatibility table.
 
 ## Environment Variables
 

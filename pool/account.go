@@ -4,6 +4,7 @@ package pool
 
 import (
 	"kiro-go/config"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,24 @@ type AccountPool struct {
 	errorCounts   map[string]int             // 连续错误计数
 	rateLimits    map[string]int             // consecutive 429 responses per account
 	modelLists    map[string]map[string]bool // accountID → set of modelIDs (from ListAvailableModels)
+	proxyDown     map[string]proxyDownState  // proxy URL → breaker opened by an egress failure
+}
+
+// proxyDownState is an open proxy breaker: accounts whose effective proxy is
+// this one are skipped until until, unless a recovery probe or a successful
+// request clears it first.
+type proxyDownState struct {
+	since   time.Time
+	until   time.Time
+	lastErr string
+}
+
+// ProxyHealth is a snapshot of one proxy whose breaker is open.
+type ProxyHealth struct {
+	URL       string
+	Since     time.Time
+	Until     time.Time
+	LastError string
 }
 
 const (
@@ -42,6 +61,7 @@ func GetPool() *AccountPool {
 			errorCounts: make(map[string]int),
 			rateLimits:  make(map[string]int),
 			modelLists:  make(map[string]map[string]bool),
+			proxyDown:   make(map[string]proxyDownState),
 		}
 		pool.Reload()
 	})
@@ -122,30 +142,19 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 			continue
 		}
 
+		// Skip accounts whose proxy is marked down.
+		if p.proxyDownLocked(acc, now) {
+			seen[acc.ID] = true
+			continue
+		}
+
 		return acc
 	}
 
 	// 无可用账号，返回冷却时间最短的（排除额度用尽的，除非允许超额）
-	var best *config.Account
-	var earliest time.Time
-	for i := range p.accounts {
-		acc := &p.accounts[i]
-		if excluded != nil && excluded[acc.ID] {
-			continue
-		}
-		if isQuotaBlocked(*acc, allowOverUsage) {
-			continue
-		}
-		if cooldown, ok := p.cooldowns[acc.ID]; ok {
-			if best == nil || cooldown.Before(earliest) {
-				best = acc
-				earliest = cooldown
-			}
-		} else {
-			return acc
-		}
-	}
-	return best
+	return p.fallbackLocked(now, func(acc *config.Account) bool {
+		return (excluded == nil || !excluded[acc.ID]) && !isQuotaBlocked(*acc, allowOverUsage)
+	})
 }
 
 // SetModelList 缓存账号支持的模型集合（由 handler 在刷新后调用）
@@ -248,29 +257,43 @@ func (p *AccountPool) pick(model string, excluded map[string]bool, inOrder bool)
 	}
 
 	// fallback：找冷却时间最短且支持该模型的账号
-	var best *config.Account
-	var earliest time.Time
-	for i := range p.accounts {
-		acc := &p.accounts[i]
-		if excluded != nil && excluded[acc.ID] {
-			continue
-		}
-		if !p.accountHasModel(acc.ID, model) {
-			continue
-		}
-		if isQuotaBlocked(*acc, allowOverUsage) {
-			continue
-		}
-		if cooldown, ok := p.cooldowns[acc.ID]; ok {
-			if best == nil || cooldown.Before(earliest) {
-				best = acc
-				earliest = cooldown
+	return p.fallbackLocked(now, func(acc *config.Account) bool {
+		return (excluded == nil || !excluded[acc.ID]) &&
+			p.accountHasModel(acc.ID, model) &&
+			!isQuotaBlocked(*acc, allowOverUsage)
+	})
+}
+
+// fallbackLocked is the no-ready-account path: the eligible account whose
+// cooldown ends first, or one with no cooldown at all. Accounts behind a down
+// proxy are considered only when no other eligible account exists, since a
+// request that can still connect beats one that cannot. The caller holds p.mu.
+func (p *AccountPool) fallbackLocked(now time.Time, eligible func(*config.Account) bool) *config.Account {
+	for pass := 0; pass < 2; pass++ {
+		var best *config.Account
+		var earliest time.Time
+		for i := range p.accounts {
+			acc := &p.accounts[i]
+			if !eligible(acc) {
+				continue
 			}
-		} else {
-			return acc
+			if pass == 0 && p.proxyDownLocked(acc, now) {
+				continue
+			}
+			if cooldown, ok := p.cooldowns[acc.ID]; ok {
+				if best == nil || cooldown.Before(earliest) {
+					best = acc
+					earliest = cooldown
+				}
+			} else {
+				return acc
+			}
+		}
+		if best != nil {
+			return best
 		}
 	}
-	return best
+	return nil
 }
 
 // readyLocked reports whether acc can serve model right now: not excluded,
@@ -293,6 +316,9 @@ func (p *AccountPool) servableLocked(acc *config.Account, model string, excluded
 		return false
 	}
 	if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
+		return false
+	}
+	if p.proxyDownLocked(acc, now) {
 		return false
 	}
 	return !isQuotaBlocked(*acc, allowOverUsage)
@@ -345,6 +371,16 @@ func (p *AccountPool) RecordSuccess(id string) {
 	delete(p.cooldowns, id)
 	p.errorCounts[id] = 0
 	delete(p.rateLimits, id)
+	// A request that completed through an account's proxy proves the proxy
+	// works, so its breaker (if any) is lifted.
+	if len(p.proxyDown) > 0 {
+		for i := range p.accounts {
+			if p.accounts[i].ID == id {
+				delete(p.proxyDown, effectiveProxyURL(&p.accounts[i]))
+				break
+			}
+		}
+	}
 }
 
 // SetCooldown keeps an account out of rotation until the given time. An
@@ -402,6 +438,9 @@ func (p *AccountPool) NextAvailableIn(model string) time.Duration {
 			continue
 		}
 		until, ok := p.cooldowns[acc.ID]
+		if down := p.proxyDownUntilLocked(acc, now); !down.IsZero() && (!ok || down.After(until)) {
+			until, ok = down, true
+		}
 		if !ok || !until.After(now) {
 			return 0
 		}
@@ -665,4 +704,102 @@ func effectiveWeight(weight int) int {
 		return 1
 	}
 	return weight
+}
+
+// effectiveProxyURL is the proxy an account's requests leave through: its own
+// proxy, else the global one. Empty means direct.
+func effectiveProxyURL(acc *config.Account) string {
+	if acc.ProxyURL != "" {
+		return acc.ProxyURL
+	}
+	return config.GetProxyURL()
+}
+
+// proxyDownUntilLocked returns when the account's proxy breaker closes, or the
+// zero time when the account's proxy is not marked down. The caller holds p.mu.
+func (p *AccountPool) proxyDownUntilLocked(acc *config.Account, now time.Time) time.Time {
+	if len(p.proxyDown) == 0 {
+		return time.Time{}
+	}
+	st, ok := p.proxyDown[effectiveProxyURL(acc)]
+	if !ok || !now.Before(st.until) {
+		return time.Time{}
+	}
+	return st.until
+}
+
+// proxyDownLocked reports whether the account's proxy breaker is open.
+func (p *AccountPool) proxyDownLocked(acc *config.Account, now time.Time) bool {
+	return !p.proxyDownUntilLocked(acc, now).IsZero()
+}
+
+// MarkProxyDown opens the breaker for proxyURL until the given time. An
+// already-open breaker keeps its start time and its later deadline, and takes
+// the newer error. It reports whether the proxy was not down before, so the
+// caller logs the transition once.
+func (p *AccountPool) MarkProxyDown(proxyURL string, until time.Time, lastErr string) bool {
+	if proxyURL == "" {
+		return false
+	}
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.proxyDown == nil {
+		p.proxyDown = make(map[string]proxyDownState)
+	}
+	cur, active := p.proxyDown[proxyURL]
+	if active && now.Before(cur.until) {
+		if cur.until.After(until) {
+			until = cur.until
+		}
+		p.proxyDown[proxyURL] = proxyDownState{since: cur.since, until: until, lastErr: lastErr}
+		return false
+	}
+	p.proxyDown[proxyURL] = proxyDownState{since: now, until: until, lastErr: lastErr}
+	return true
+}
+
+// ClearProxyDown closes the breaker for proxyURL. It returns the state that was
+// cleared and whether one was open.
+func (p *AccountPool) ClearProxyDown(proxyURL string) (ProxyHealth, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	st, ok := p.proxyDown[proxyURL]
+	if !ok {
+		return ProxyHealth{}, false
+	}
+	delete(p.proxyDown, proxyURL)
+	return ProxyHealth{URL: proxyURL, Since: st.since, Until: st.until, LastError: st.lastErr}, true
+}
+
+// ProxyHealthSnapshot lists the proxies whose breaker is open now. Breakers
+// that have run out are dropped.
+func (p *AccountPool) ProxyHealthSnapshot() []ProxyHealth {
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []ProxyHealth
+	for url, st := range p.proxyDown {
+		if !now.Before(st.until) {
+			delete(p.proxyDown, url)
+			continue
+		}
+		out = append(out, ProxyHealth{URL: url, Since: st.since, Until: st.until, LastError: st.lastErr})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].URL < out[j].URL })
+	return out
+}
+
+// AccountsBehindProxy counts the distinct accounts whose effective proxy is
+// proxyURL.
+func (p *AccountPool) AccountsBehindProxy(proxyURL string) int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	seen := make(map[string]bool)
+	for i := range p.accounts {
+		if effectiveProxyURL(&p.accounts[i]) == proxyURL {
+			seen[p.accounts[i].ID] = true
+		}
+	}
+	return len(seen)
 }

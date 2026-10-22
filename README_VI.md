@@ -176,6 +176,8 @@ Với người dùng ở khu vực mạng bị hạn chế, cấu hình proxy ra
 
 Cài đặt có hiệu lực ngay, không cần khởi động lại.
 
+Khi không kết nối được proxy, các tài khoản dùng proxy đó sẽ bị bỏ qua và yêu cầu chuyển sang tài khoản khác; proxy được đánh dấu "Không khả dụng" trong cài đặt và trên thẻ tài khoản, được thăm dò lại mỗi 30 giây và tự dùng lại khi hoạt động. Có thể chỉnh bằng `upstreamConnectTimeoutSeconds` và `proxyDownSeconds`.
+
 ## Biến môi trường
 
 | Biến | Mô tả | Mặc định |

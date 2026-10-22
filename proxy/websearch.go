@@ -248,6 +248,9 @@ func randomFromCharset(n int, charset string) string {
 // callMcpAPIFunc is swapped in tests; the MCP endpoint is a fixed AWS host.
 var callMcpAPIFunc = callMcpAPI
 
+// mcpCallTimeout bounds one MCP web-search call from dial to last byte.
+const mcpCallTimeout = 60 * time.Second
+
 // callMcpAPI posts the JSON-RPC request to Kiro MCP and returns the parsed response.
 func callMcpAPI(account *config.Account, mcpReq *McpRequest) (*McpResponse, error) {
 	if mcpReq == nil {
@@ -276,7 +279,11 @@ func callMcpAPI(account *config.Account, mcpReq *McpRequest) (*McpResponse, erro
 	}
 	logger.Debugf("[MCP] Request: %s", string(reqBody))
 
-	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(reqBody))
+	// A search is a short call. Bounding it keeps a dead proxy from holding the
+	// request for the 30-minute stream timeout before the account fails over.
+	ctx, cancel := context.WithTimeout(context.Background(), mcpCallTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, err
 	}
