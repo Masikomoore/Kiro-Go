@@ -57,7 +57,7 @@ This fork fixes all of these.
 - Per-request config writes are batched (about 1.5–7 ms → about 41 ns per request); the request body is encoded once per endpoint; faster first byte.
 - fable / mythos models and the 1M context window; system turns inside messages and `temperature: 0` handled correctly; signed thinking blocks; leaked tool_use XML stripped from answers; `<thinking>` inside quotes or code fences left alone; "Kiro" in replies can be rewritten to "Claude".
 
-All switches are described under [Compatibility and Prompt-Cache Settings](#compatibility-and-prompt-cache-settings).
+All switches are described under [Compatibility and Prompt-Cache Settings](#compatibility-and-prompt-cache-settings). Every change by version: [CHANGELOG.md](CHANGELOG.md).
 
 ## Features
 

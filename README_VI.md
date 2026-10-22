@@ -57,7 +57,7 @@ Bản fork này đã sửa tất cả những điều đó.
 - Ghi cấu hình theo lô thay vì mỗi request (khoảng 1.5–7 ms → khoảng 41 ns mỗi request); thân request chỉ mã hóa một lần cho mỗi endpoint; byte đầu tiên nhanh hơn.
 - Hỗ trợ fable / mythos và ngữ cảnh 1M; xử lý đúng lượt system trong messages và `temperature: 0`; ký các khối thinking; loại bỏ XML tool_use rò rỉ vào câu trả lời; không nhầm `<thinking>` nằm trong trích dẫn hay khối code; có thể đổi "Kiro" trong câu trả lời thành "Claude".
 
-Mô tả đầy đủ các công tắc có trong tài liệu tiếng Anh: [Compatibility and Prompt-Cache Settings](README.md#compatibility-and-prompt-cache-settings).
+Mô tả đầy đủ các công tắc có trong tài liệu tiếng Anh: [Compatibility and Prompt-Cache Settings](README.md#compatibility-and-prompt-cache-settings). Thay đổi theo từng phiên bản: [CHANGELOG.md](CHANGELOG.md).
 
 ## Tính năng
 

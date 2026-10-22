@@ -57,7 +57,7 @@
 - 每个请求的配置写入改为批量落盘（每次约 1.5–7 ms → 约 41 ns），请求体每个端点只编码一次，首字节更快。
 - 支持 fable / mythos 和 1M 上下文；正确处理 messages 里的 system 角色和 `temperature: 0`；思考块签名；过滤泄漏到正文里的 tool_use XML；引号和代码块里的 `<thinking>` 不误判；回复里的 "Kiro" 可改写为 "Claude"。
 
-全部兼容性开关的说明见英文文档的 [Compatibility and Prompt-Cache Settings](README.md#compatibility-and-prompt-cache-settings)。
+全部兼容性开关的说明见英文文档的 [Compatibility and Prompt-Cache Settings](README.md#compatibility-and-prompt-cache-settings)。各版本改动见 [CHANGELOG_CN.md](CHANGELOG_CN.md)。
 
 ## 功能特性
 
