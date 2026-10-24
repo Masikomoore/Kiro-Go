@@ -20,9 +20,15 @@ const (
 	duplicateImagePlaceholder = "[Image omitted: the same image is attached later in this conversation.]"
 	oldHistoryImagesFormat    = "[%d image(s) omitted from older conversation history.]"
 
-	// historyImageKeepUserTurns is how many of the latest user turns keep their
-	// images when the payload is over the limit.
-	historyImageKeepUserTurns = 5
+	// When the payload is over the limit, images are dropped from all but the
+	// newest history user turns. The cut moves in steps of
+	// historyImageWindowStep user turns, so between historyImageMinKeepUserTurns
+	// and historyImageMinKeepUserTurns+historyImageWindowStep-1 history user
+	// turns keep their images. A cut that moved every turn rewrote the entry
+	// ten back on every turn (CA2 conv 243fc8a2, 2026-10-24), and Kiro wrote
+	// everything after it to its cache again: 16k–34k tokens a turn.
+	historyImageMinKeepUserTurns = 2
+	historyImageWindowStep       = 3
 
 	// History text above historyTextCompactLimit bytes is cut to its head and
 	// tail when the payload is over the limit.
@@ -100,24 +106,54 @@ func dedupeKiroImages(payload *KiroPayload) {
 	}
 
 	dedupe(&payload.ConversationState.CurrentMessage.UserInputMessage)
+	// Turns past the image cut are left alone. Over the limit their images are
+	// dropped with a note that must not change once sent (re-attaching one of
+	// their images rewrote it, 243fc8a2); under it, an old duplicate costs less
+	// than Kiro writing the history after it to its cache again.
 	history := payload.ConversationState.History
-	for i := len(history) - 1; i >= 0; i-- {
-		dedupe(history[i].UserInputMessage)
+	aged := agedImageUserTurns(history)
+	userTurn := historyUserTurns(history)
+	for i := len(history) - 1; i >= 0 && userTurn > aged; i-- {
+		if msg := history[i].UserInputMessage; msg != nil {
+			dedupe(msg)
+			userTurn--
+		}
 	}
 }
 
-// dropOldHistoryImages removes images from user turns older than the latest
-// historyImageKeepUserTurns user turns. It reports whether anything changed.
+func historyUserTurns(history []KiroHistoryMessage) int {
+	n := 0
+	for _, entry := range history {
+		if entry.UserInputMessage != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// agedImageUserTurns is how many history user turns, oldest first and the
+// system priming included, lose their images when the payload is over the limit.
+func agedImageUserTurns(history []KiroHistoryMessage) int {
+	n := historyUserTurns(history)
+	if n <= historyImageMinKeepUserTurns {
+		return 0
+	}
+	return (n - historyImageMinKeepUserTurns) / historyImageWindowStep * historyImageWindowStep
+}
+
+// dropOldHistoryImages removes images from the user turns before the image
+// cut (agedImageUserTurns). It reports whether anything changed.
 func dropOldHistoryImages(history []KiroHistoryMessage, primingCount int) bool {
 	changed := false
-	userTurns := 1 // the current message counts as the newest user turn
-	for i := len(history) - 1; i >= primingCount; i-- {
+	aged := agedImageUserTurns(history)
+	userTurn := 0
+	for i := 0; i < len(history) && userTurn < aged; i++ {
 		msg := history[i].UserInputMessage
 		if msg == nil {
 			continue
 		}
-		userTurns++
-		if userTurns <= historyImageKeepUserTurns || len(msg.Images) == 0 {
+		userTurn++
+		if i < primingCount || len(msg.Images) == 0 {
 			continue
 		}
 		msg.Content = joinHistoryText(msg.Content, fmt.Sprintf(oldHistoryImagesFormat, len(msg.Images)))

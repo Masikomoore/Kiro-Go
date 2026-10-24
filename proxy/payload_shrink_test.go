@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"kiro-go/config"
 	"strings"
@@ -94,8 +95,8 @@ func TestTruncatePayloadDropsOldImagesBeforeTurns(t *testing.T) {
 			t.Fatal("no turn should have been dropped")
 		}
 	}
-	if withImages != historyImageKeepUserTurns-1 {
-		t.Fatalf("expected images on the latest %d history user turns, got %d", historyImageKeepUserTurns-1, withImages)
+	if max := historyImageMinKeepUserTurns + historyImageWindowStep - 1; withImages < historyImageMinKeepUserTurns || withImages > max {
+		t.Fatalf("expected images on the latest %d–%d history user turns, got %d", historyImageMinKeepUserTurns, max, withImages)
 	}
 }
 
@@ -222,5 +223,85 @@ func TestTruncatePayloadDefaultLimitKeepsLargeHistory(t *testing.T) {
 	truncatePayloadToLimit(p, true)
 	if p.Shrink.Stage == "" || payloadByteSize(p) > 900*1024 {
 		t.Fatalf("with maxPayloadKB=900 the payload must be shrunk to fit, got stage %q size %d", p.Shrink.Stage, payloadByteSize(p))
+	}
+}
+
+// imageTurns returns one 90 KB image per user turn; repeat maps a turn to the
+// earlier turn whose image it attaches again.
+func imageTurns(n int, repeat map[int]int) []int {
+	seeds := make([]int, n)
+	for i := range seeds {
+		seeds[i] = i
+		if from, ok := repeat[i]; ok {
+			seeds[i] = from
+		}
+	}
+	return seeds
+}
+
+// sentHistory is the Kiro history sent for a conversation whose user turns
+// carry the given image seeds, the last one being the current message.
+func sentHistory(seeds []int) []string {
+	payload := &KiroPayload{}
+	history := []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
+	for i, s := range seeds[:len(seeds)-1] {
+		history = append(history, userTurn(fmt.Sprintf("turn %d", i), kiroImage(fakePNG(s, 90*1024))), assistantTurn(fmt.Sprintf("ok %d", i)))
+	}
+	payload.ConversationState.History = history
+	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{
+		Content: "now", ModelID: "claude-sonnet-4.5", Images: []KiroImage{kiroImage(fakePNG(seeds[len(seeds)-1], 90*1024))},
+	}
+	dedupeKiroImages(payload)
+	truncatePayloadToLimit(payload, true)
+	out := make([]string, len(payload.ConversationState.History))
+	for i, h := range payload.ConversationState.History {
+		raw, _ := json.Marshal(h)
+		out[i] = string(raw)
+	}
+	return out
+}
+
+// firstChange is the first index where an entry sent before differs now, or -1.
+func firstChange(prev, cur []string) int {
+	for i := 0; i < len(prev) && i < len(cur); i++ {
+		if prev[i] != cur[i] {
+			return i
+		}
+	}
+	return -1
+}
+
+// Repro of conv 243fc8a2 (CA2, 2026-10-24): Kiro history entry 81 changed in
+// two turns while the payload was over the limit. The first change is the
+// 5-user-turn image window reaching it; the second came when a later turn
+// attached one of its images again, and dedup rewrote the entry's note. Each
+// rewrite makes Kiro write everything after it to its cache again.
+func TestShrinkDoesNotRewriteAgedEntryWhenImageIsAttachedAgain(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
+	seeds := imageTurns(14, map[int]int{12: 3})
+	prev := sentHistory(seeds[:12])
+	cur := sentHistory(seeds[:13])
+	if i := firstChange(prev, cur); i >= 0 && i < len(cur)-10 {
+		t.Fatalf("turn 3 (entry 8) already lost its image; re-attaching it rewrote entry %d of %d", i, len(cur))
+	}
+}
+
+// Repro: once over the limit, every new turn moves the image window by one
+// user turn and rewrites the entry ten back, so Kiro writes ~10 entries again
+// every turn (243fc8a2: 16k–34k tokens of cache creation per turn).
+func TestShrinkDoesNotRewriteHistoryEveryTurn(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
+	seeds := imageTurns(20, nil)
+	rewrites := 0
+	prev := sentHistory(seeds[:10])
+	for n := 11; n <= len(seeds); n++ {
+		cur := sentHistory(seeds[:n])
+		if firstChange(prev, cur) >= 0 {
+			rewrites++
+		}
+		prev = cur
+	}
+	if rewrites > 10/historyImageWindowStep+1 {
+		t.Fatalf("history rewritten in %d of 10 turns over the limit", rewrites)
 	}
 }
