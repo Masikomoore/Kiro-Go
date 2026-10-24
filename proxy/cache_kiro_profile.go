@@ -20,7 +20,8 @@ import "encoding/json"
 const kiroImageTokenEstimate = 1600
 
 // BuildKiroProfile returns the cache profile of payload. Scope is left empty,
-// so entries are keyed by the upstream account like Kiro's own cache.
+// so entries are keyed by the upstream account like Kiro's own cache, and
+// within it by the Kiro conversation ID.
 //
 // includeCurrent adds the current message as a final boundary. It is set when
 // the client asked for that write with cache_control (Claude Code marks its
@@ -31,7 +32,11 @@ func (t *promptCacheTracker) BuildKiroProfile(payload *KiroPayload, model string
 		return nil
 	}
 	current := payload.ConversationState.CurrentMessage.UserInputMessage
-	prelude := map[string]interface{}{"kind": "kiro_prelude", "model": model}
+	// The conversation ID is part of every prefix: on CA2 Kiro billed a
+	// prefix shared by two conversations (system prompt and tools, ~20–30k
+	// tokens) cold in 6 of 7 samples (2026-10-23/24), while the report said
+	// it was read.
+	prelude := map[string]interface{}{"kind": "kiro_prelude", "model": model, "conversation": payload.ConversationState.ConversationID}
 	preludeTokens := 0
 	if ctx := current.UserInputMessageContext; ctx != nil && len(ctx.Tools) > 0 {
 		prelude["tools"] = ctx.Tools

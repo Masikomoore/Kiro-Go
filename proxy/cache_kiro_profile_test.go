@@ -38,6 +38,22 @@ func TestKiroProfileHitsGrowingConversation(t *testing.T) {
 	}
 }
 
+// Two conversations that share a system prompt and tools do not read each
+// other's prefix: Kiro billed such shared prefixes cold.
+func TestKiroProfileDoesNotShareAcrossConversations(t *testing.T) {
+	useCompat(t, config.CompatSettings{})
+	tracker := newPromptCacheTracker(time.Hour)
+	first := kiroConversation(3)
+	tracker.Update("acct-1", tracker.BuildKiroProfile(first, "claude-sonnet-4.5", false))
+
+	other := kiroConversation(3)
+	other.ConversationState.ConversationID = "another-conversation"
+	got := tracker.Compute("acct-1", tracker.BuildKiroProfile(other, "claude-sonnet-4.5", false))
+	if got.CacheReadInputTokens != 0 {
+		t.Fatalf("another conversation must not read the shared prefix, got %+v", got)
+	}
+}
+
 // When kiro-go changes an early history entry (a moved truncation boundary,
 // say), upstream cannot reuse the prefix past it, and neither may the report.
 func TestKiroProfileStopsAtChangedEntry(t *testing.T) {
