@@ -382,7 +382,9 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	payload.ConversationState.ChatTriggerType = "MANUAL"
 	payload.ConversationState.AgentTaskType = "vibe"
 	payload.ConversationState.AgentContinuationId = uuid.New().String()
-	payload.ConversationState.ConversationID = buildConversationID(modelID, systemPrompt, firstClaudeConversationAnchor(messages))
+	anchor := firstClaudeConversationAnchor(messages)
+	payload.Seed = conversationSeed{Model: modelID, System: systemPrompt, Anchor: anchor}
+	payload.ConversationState.ConversationID = buildConversationID(modelID, systemPrompt, anchor)
 	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{
 		Content: finalContent,
 		ModelID: modelID,

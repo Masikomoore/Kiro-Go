@@ -226,6 +226,16 @@ type KiroPayload struct {
 
 	// Shrink records what truncatePayloadToLimit did, for diagnostics only.
 	Shrink payloadShrinkInfo `json:"-"`
+
+	// Seed is what the conversation ID was derived from, for diagnostics only.
+	Seed conversationSeed `json:"-"`
+}
+
+// conversationSeed is the input of buildConversationID.
+type conversationSeed struct {
+	Model  string
+	System string
+	Anchor string
 }
 
 // payloadShrinkInfo describes how a payload was reduced to fit

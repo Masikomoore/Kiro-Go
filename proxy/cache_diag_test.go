@@ -3,6 +3,8 @@ package proxy
 import (
 	"fmt"
 	"kiro-go/config"
+	"kiro-go/logger"
+	"os"
 	"strings"
 	"testing"
 )
@@ -133,5 +135,39 @@ func TestFirstPartDiffNamesTheChangedBlock(t *testing.T) {
 	}})
 	if got := firstPartDiff(prev, cur, true); !strings.HasPrefix(got, "b1:user.tool_result ") {
 		t.Fatalf("expected block 1 tool_result, got %q", got)
+	}
+}
+
+// A client that changes its system prompt every turn gets a new conversation
+// ID each time; the seed line ties the new ID to the previous one and says
+// where the prompt changed, without logging its content.
+func TestCacheDiagLogsWhereConversationSeedChanged(t *testing.T) {
+	var buf strings.Builder
+	logger.SetOutput(&buf)
+	t.Cleanup(func() { logger.SetOutput(os.Stderr) })
+
+	turn := func(system string, n int) *ClaudeRequest {
+		msgs := []ClaudeMessage{}
+		for i := 0; i < n; i++ {
+			msgs = append(msgs, ClaudeMessage{Role: "user", Content: fmt.Sprintf("question %d", i)})
+			if i < n-1 {
+				msgs = append(msgs, ClaudeMessage{Role: "assistant", Content: fmt.Sprintf("answer %d", i)})
+			}
+		}
+		return &ClaudeRequest{Model: "claude-opus-5.5", System: system, Messages: msgs}
+	}
+	base := strings.Repeat("You are a coding assistant. ", 40)
+	diag := newCacheDiagTracker()
+	for n, system := range []string{base + "Time: 10:00:01", base + "Time: 10:00:09"} {
+		req := turn(system, n+2)
+		diag.observe(req, ClaudeToKiro(req, false))
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "[ConvSeed]") || !strings.Contains(out, " model=same system=@1024(len 1134>1134) anchor=same synthetic=false") {
+		t.Fatalf("expected a seed line naming the system prompt change, got:\n%s", out)
+	}
+	if strings.Contains(out, "10:00") {
+		t.Fatalf("seed line must not log prompt content:\n%s", out)
 	}
 }

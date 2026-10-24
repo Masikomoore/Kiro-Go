@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"kiro-go/logger"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,16 +34,59 @@ type cacheDiagEntry struct {
 	kiro        []uint64
 	kiroNoID    []uint64
 	tools       uint64
+	seed        seedSum
 	seen        time.Time
 }
 
 type cacheDiagTracker struct {
 	mu      sync.Mutex
 	entries map[string]*cacheDiagEntry
+	// siblings maps the hash of a request's first assistant message to the
+	// conversation that sent it. Some clients arrive with a new conversation
+	// ID every turn of one growing conversation, and every turn is billed
+	// cold; that reply stays the same, so it ties the new ID to the old one.
+	siblings map[uint64]string
 }
 
 func newCacheDiagTracker() *cacheDiagTracker {
-	return &cacheDiagTracker{entries: make(map[string]*cacheDiagEntry)}
+	return &cacheDiagTracker{entries: make(map[string]*cacheDiagEntry), siblings: make(map[uint64]string)}
+}
+
+// seedChunkBytes is the granularity at which a changed seed part is located.
+const seedChunkBytes = 256
+
+// seedSum summarizes a conversation seed as chunk hashes, so a later request
+// can say where the system prompt or the first user text changed.
+type seedSum struct {
+	model     string
+	system    []uint64
+	systemLen int
+	anchor    []uint64
+	anchorLen int
+}
+
+func chunkHashes(s string) []uint64 {
+	var out []uint64
+	for i := 0; i < len(s); i += seedChunkBytes {
+		out = append(out, diagHashString(s[i:minInt(i+seedChunkBytes, len(s))]))
+	}
+	return out
+}
+
+func summarizeSeed(seed conversationSeed) seedSum {
+	system, anchor := strings.TrimSpace(seed.System), strings.TrimSpace(seed.Anchor)
+	return seedSum{model: seed.Model, system: chunkHashes(system), systemLen: len(system), anchor: chunkHashes(anchor), anchorLen: len(anchor)}
+}
+
+// seedPartChange returns "same", or the byte offset of the first changed
+// chunk with both lengths, e.g. "@1024(len 30512>30530)".
+func seedPartChange(prev, cur []uint64, prevLen, curLen int) string {
+	for i := 0; i < len(prev) || i < len(cur); i++ {
+		if i >= len(prev) || i >= len(cur) || prev[i] != cur[i] {
+			return "@" + strconv.Itoa(i*seedChunkBytes) + "(len " + strconv.Itoa(prevLen) + ">" + strconv.Itoa(curLen) + ")"
+		}
+	}
+	return "same"
 }
 
 func diagHash(v interface{}) uint64 {
@@ -256,6 +300,7 @@ func (t *cacheDiagTracker) observe(req *ClaudeRequest, payload *KiroPayload) {
 	if ctx := payload.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext; ctx != nil {
 		tools = diagHash(ctx.Tools)
 	}
+	seed := summarizeSeed(payload.Seed)
 	now := time.Now()
 
 	t.mu.Lock()
@@ -283,9 +328,23 @@ func (t *cacheDiagTracker) observe(req *ClaudeRequest, payload *KiroPayload) {
 	if i := divergenceIndex(kiroDiv); i >= 0 && i < len(prev.kiroParts) && i < len(kiroParts) {
 		kiroDetail = "[" + firstPartDiff(prev.kiroParts[i], kiroParts[i], false) + "]"
 	}
+	seedChange := ""
+	if len(clientNoID) >= 3 {
+		if sib, found := t.entries[t.siblings[clientNoID[1]]]; !ok && found && now.Sub(sib.seen) <= cacheDiagTTL {
+			model := "same"
+			if sib.seed.model != seed.model {
+				model = "changed"
+			}
+			seedChange = "prevConv=" + shortID(t.siblings[clientNoID[1]]) + " model=" + model +
+				" system=" + seedPartChange(sib.seed.system, seed.system, sib.seed.systemLen, seed.systemLen) +
+				" anchor=" + seedPartChange(sib.seed.anchor, seed.anchor, sib.seed.anchorLen, seed.anchorLen) +
+				" synthetic=" + strconv.FormatBool(isSyntheticConversationAnchor(payload.Seed.Anchor))
+		}
+		t.siblings[clientNoID[1]] = conv
+	}
 	t.entries[conv] = &cacheDiagEntry{
 		clientParts: clientParts, kiroParts: kiroParts,
-		client: client, clientNoID: clientNoID, kiro: kiro, kiroNoID: kiroNoID, tools: tools, seen: now,
+		client: client, clientNoID: clientNoID, kiro: kiro, kiroNoID: kiroNoID, tools: tools, seed: seed, seen: now,
 	}
 	if len(t.entries) > cacheDiagMaxEntries {
 		for k, e := range t.entries {
@@ -294,6 +353,13 @@ func (t *cacheDiagTracker) observe(req *ClaudeRequest, payload *KiroPayload) {
 				if len(t.entries) <= cacheDiagMaxEntries {
 					break
 				}
+			}
+		}
+	}
+	if len(t.siblings) > cacheDiagMaxEntries {
+		for k, c := range t.siblings {
+			if _, live := t.entries[c]; !live {
+				delete(t.siblings, k)
 			}
 		}
 	}
@@ -307,6 +373,9 @@ func (t *cacheDiagTracker) observe(req *ClaudeRequest, payload *KiroPayload) {
 	logger.Infof("[CacheDiag] conv=%s msgs=%d prev=%d client=%s%s hist=%d prevHist=%d kiro=%s%s tools=%s shrink=%s dropped=%d bytes=%d",
 		convShort, len(client), prevClient, clientDiv, clientDetail, len(kiro), prevKiro, kiroDiv, kiroDetail, toolsState,
 		shrink, payload.Shrink.DroppedTurns, payload.Shrink.OriginalBytes)
+	if seedChange != "" {
+		logger.Infof("[ConvSeed] conv=%s %s", convShort, seedChange)
+	}
 }
 
 // shortConversationID is the first 8 characters of the Kiro conversation ID,
@@ -315,7 +384,10 @@ func shortConversationID(payload *KiroPayload) string {
 	if payload == nil {
 		return "-"
 	}
-	id := payload.ConversationState.ConversationID
+	return shortID(payload.ConversationState.ConversationID)
+}
+
+func shortID(id string) string {
 	if len(id) > 8 {
 		id = id[:8]
 	}
