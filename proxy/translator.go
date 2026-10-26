@@ -266,6 +266,11 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	}
 	systemPrompt := buildClaudeSystemPrompt(system, thinkingPrompt)
 	systemPrompt = appendChunkingPolicy(systemPrompt, claudeToolNames(req.Tools))
+	// A system prompt whose end changes every turn would make every turn a
+	// new, cold Kiro conversation; its volatile tail rides on the current
+	// message instead (stable_system.go).
+	anchor := firstClaudeConversationAnchor(messages)
+	systemPrompt, systemTail := splitStableSystem(modelID, anchor, systemPrompt)
 
 	// 构建历史消息
 	history := make([]KiroHistoryMessage, 0)
@@ -363,6 +368,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 			finalContent = minimalFallbackUserContent
 		}
 	}
+	finalContent = withSystemTail(finalContent, systemTail)
 
 	// 转换工具
 	kiroTools, toolNameMap := convertClaudeTools(req.Tools)
@@ -382,7 +388,6 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	payload.ConversationState.ChatTriggerType = "MANUAL"
 	payload.ConversationState.AgentTaskType = "vibe"
 	payload.ConversationState.AgentContinuationId = uuid.New().String()
-	anchor := firstClaudeConversationAnchor(messages)
 	payload.Seed = conversationSeed{Model: modelID, System: systemPrompt, Anchor: anchor}
 	payload.ConversationState.ConversationID = buildConversationID(modelID, systemPrompt, anchor)
 	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{

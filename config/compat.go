@@ -48,6 +48,12 @@ type CompatSettings struct {
 	// that carry no cache_control, using message boundaries. Default on.
 	ImplicitAnthropicCache *bool `json:"implicitAnthropicCache,omitempty"`
 
+	// StableSystemPrompt keeps a system prompt whose end changes every turn
+	// from starting a new, cold Kiro conversation each turn: the shared
+	// prefix stays in history, the changing tail goes with the current
+	// message. Default on.
+	StableSystemPrompt *bool `json:"stableSystemPrompt,omitempty"`
+
 	// CLIEndpointFirst (experimental, default off) sends OAuth accounts to the
 	// Kiro CLI runtime first and falls back to the IDE endpoints on any error.
 	CLIEndpointFirst bool `json:"cliEndpointFirst,omitempty"`
@@ -126,6 +132,7 @@ type CompatConfig struct {
 	SimulateAnthropicCache   bool
 	SchedulingMode           string
 	ImplicitAnthropicCache   bool
+	StableSystemPrompt       bool
 	CLIEndpointFirst         bool
 }
 
@@ -160,6 +167,7 @@ func ResolveCompatSettings(s CompatSettings) CompatConfig {
 		SimulateAnthropicCache:   boolOrDefault(s.SimulateAnthropicCache, true),
 		SchedulingMode:           SchedulingSticky,
 		ImplicitAnthropicCache:   boolOrDefault(s.ImplicitAnthropicCache, true),
+		StableSystemPrompt:       boolOrDefault(s.StableSystemPrompt, true),
 		CLIEndpointFirst:         s.CLIEndpointFirst,
 	}
 	if s.MaxPayloadKB > 0 {

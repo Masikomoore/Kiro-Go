@@ -4300,6 +4300,7 @@ func compatEffectiveSettings(c config.CompatConfig) map[string]interface{} {
 		"simulateAnthropicCache":         c.SimulateAnthropicCache,
 		"schedulingMode":                 c.SchedulingMode,
 		"implicitAnthropicCache":         c.ImplicitAnthropicCache,
+		"stableSystemPrompt":             c.StableSystemPrompt,
 		"cliEndpointFirst":               c.CLIEndpointFirst,
 	}
 }
