@@ -5,6 +5,17 @@ All notable changes of this fork ([Masikomoore/Kiro-Go](https://github.com/Masik
 
 ## Unreleased
 
+### Billing and prompt cache
+- **Changing system-prompt tail no longer starts a cold conversation every turn** (`d78085b`,
+  `compat.stableSystemPrompt`, default on). When a client's system prompt differs from its previous one only in the
+  last few KB, the shared prefix stays in history entry 0 and the conversation ID, and the changing tail goes with
+  the current message. One client had been billed every turn cold at 370k–460k tokens.
+- **History images are kept unless images alone pass 6 MB.** Kiro's input limit counts text, not image data (requests
+  with 3–5.6 MB of history images passed, every image read), so `compat.maxPayloadKB` now applies to the payload
+  without image data. Above the image cap old images are dropped at a point kept per conversation, which moves only
+  when it must, down to half the cap. Removing an image made Kiro bill the whole prompt cold; image-heavy
+  conversations used to lose images every 3 user turns at 2 MB.
+
 ### Reliability
 - **Fast failover when an account's proxy is down** (`4d5a89a`). A 15 s connect timer per upstream attempt
   (`compat.upstreamConnectTimeoutSeconds`) catches an unreachable proxy instead of the 2-minute idle timer; the request

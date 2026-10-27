@@ -1888,7 +1888,12 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 	}
 	originalBytes := payloadByteSize(payload)
 	payload.Shrink = payloadShrinkInfo{OriginalBytes: originalBytes}
-	if originalBytes <= maxPayloadBytes() {
+	// Kiro's limit counts text, not image data, so the two are measured
+	// apart: text against maxPayloadBytes(), images against
+	// maxPayloadImageBytes (payload_shrink.go).
+	imageBytes := payloadImageBytes(payload)
+	textFits := func() bool { return payloadTextBytes(payload) <= maxPayloadBytes() }
+	if textFits() && imageBytes <= maxPayloadImageBytes {
 		return
 	}
 
@@ -1898,14 +1903,20 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 		primingCount = 2
 	}
 
-	// Cheaper reductions first: old images, then the head and tail of very
-	// large history text. Whole turns are dropped only if that is not enough.
-	payload.Shrink.Stage = "images"
-	if dropOldHistoryImages(history, primingCount) && payloadByteSize(payload) <= maxPayloadBytes() {
-		return
+	// Old images go only when the images are over their own cap; removing one
+	// makes Kiro miss its cache, and it does not help the text limit. Then the
+	// head and tail of very large history text; whole turns are dropped only
+	// if that is not enough.
+	if imageBytes > maxPayloadImageBytes {
+		payload.Shrink.Stage = "images"
+		aged := chooseImageCut(payload.ConversationState.ConversationID, history, imageBytes)
+		dropOldHistoryImages(history, primingCount, aged)
+		if textFits() {
+			return
+		}
 	}
 	payload.Shrink.Stage = "compact"
-	if compactHistoryText(history, primingCount) && payloadByteSize(payload) <= maxPayloadBytes() {
+	if compactHistoryText(history, primingCount) && textFits() {
 		return
 	}
 	payload.Shrink.Stage = "drop"
@@ -1925,15 +1936,15 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 		},
 	}
 
-	// Precompute byte size of each conversation entry once (O(n)).
+	// Precompute the text size of each conversation entry once (O(n)).
 	entrySizes := make([]int, len(conversation))
 	for i := range conversation {
-		entrySizes[i] = historyEntryByteSize(conversation[i])
+		entrySizes[i] = historyEntryTextSize(conversation[i])
 	}
 
 	// Base size: payload with priming only (no conversation), plus placeholder.
 	payload.ConversationState.History = priming
-	baseSize := payloadByteSize(payload) + historyEntryByteSize(placeholderEntry)
+	baseSize := payloadTextBytes(payload) + historyEntryByteSize(placeholderEntry)
 
 	// When the current message is over the limit even without its text (its
 	// images, say), neither dropping turns nor truncating that text can make
@@ -1961,7 +1972,7 @@ func truncatePayloadToLimit(payload *KiroPayload, hasPriming bool) {
 
 	// If still too large (current message or retained tail alone exceeds the
 	// limit), shrink the current message content as a last resort.
-	if payloadByteSize(payload) > maxPayloadBytes() {
+	if !textFits() {
 		payload.Shrink.Stage = "current"
 		truncateCurrentMessage(payload)
 	}
@@ -2003,19 +2014,20 @@ func currentMessageModelID(payload *KiroPayload) string {
 // resort when even the minimal retained history plus current message exceeds the
 // limit.
 // currentMessageWithoutTextExceedsLimit reports whether the payload, as it
-// stands, exceeds maxPayloadBytes() with the current message's text removed.
+// stands, exceeds maxPayloadBytes() with the current message's text removed
+// (image data not counted).
 func currentMessageWithoutTextExceedsLimit(payload *KiroPayload) bool {
 	cur := &payload.ConversationState.CurrentMessage.UserInputMessage
 	content := cur.Content
 	cur.Content = ""
-	size := payloadByteSize(payload)
+	size := payloadTextBytes(payload)
 	cur.Content = content
 	return size > maxPayloadBytes()
 }
 
 func truncateCurrentMessage(payload *KiroPayload) {
 	cur := &payload.ConversationState.CurrentMessage.UserInputMessage
-	overhead := payloadByteSize(payload) - len(cur.Content)
+	overhead := payloadTextBytes(payload) - len(cur.Content)
 	budget := maxPayloadBytes() - overhead
 	if budget < 0 {
 		budget = 0

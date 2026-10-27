@@ -67,8 +67,73 @@ func TestDedupeKiroImagesKeepsLatestCopy(t *testing.T) {
 	}
 }
 
+// useImageCap lowers maxPayloadImageBytes for one test, so image fixtures of
+// a few hundred KB exercise the image cut.
+func useImageCap(t *testing.T, bytes int) {
+	t.Helper()
+	old := maxPayloadImageBytes
+	maxPayloadImageBytes = bytes
+	t.Cleanup(func() { maxPayloadImageBytes = old })
+}
+
+// Kiro's input limit counts text, not image data (CA2, 2026-10-27: 3.2–5.6 MB
+// of history images passed). Images under their own cap are sent whole even
+// when the payload is far over maxPayloadBytes().
+func TestTruncatePayloadKeepsImagesUnderImageCap(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900})
+	payload := &KiroPayload{}
+	history := []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
+	for i := 0; i < 16; i++ {
+		history = append(history, userTurn(fmt.Sprintf("turn %d", i), kiroImage(fakePNG(i, 90*1024))), assistantTurn("ok"))
+	}
+	payload.ConversationState.History = history
+	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{Content: "now", ModelID: "claude-sonnet-4.5"}
+
+	truncatePayloadToLimit(payload, true)
+
+	if payloadByteSize(payload) <= maxPayloadBytes() {
+		t.Fatal("fixture must be over the byte limit")
+	}
+	if payload.Shrink.Stage != "" {
+		t.Fatalf("stage = %q, want nothing shrunk", payload.Shrink.Stage)
+	}
+	for i, h := range payload.ConversationState.History[2:] {
+		if u := h.UserInputMessage; u != nil && len(u.Images) != 1 {
+			t.Fatalf("history entry %d lost its image", i+2)
+		}
+	}
+}
+
+// Text over the limit with images under their cap: text is compacted or turns
+// dropped, but the kept turns keep their images.
+func TestTruncatePayloadTextOverLimitKeepsImages(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900})
+	payload := &KiroPayload{}
+	history := []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
+	for i := 0; i < 12; i++ {
+		history = append(history, userTurn(fmt.Sprintf("result %d: %s", i, strings.Repeat("x", 100*1024)), kiroImage(fakePNG(i, 90*1024))), assistantTurn("ok"))
+	}
+	payload.ConversationState.History = history
+	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{Content: "now", ModelID: "claude-sonnet-4.5"}
+
+	truncatePayloadToLimit(payload, true)
+
+	if payload.Shrink.Stage != "compact" {
+		t.Fatalf("stage = %q, want compact", payload.Shrink.Stage)
+	}
+	if payloadTextBytes(payload) > maxPayloadBytes() {
+		t.Fatalf("text still %d bytes", payloadTextBytes(payload))
+	}
+	for i, h := range payload.ConversationState.History[2:] {
+		if u := h.UserInputMessage; u != nil && len(u.Images) != 1 {
+			t.Fatalf("history entry %d lost its image", i+2)
+		}
+	}
+}
+
 func TestTruncatePayloadDropsOldImagesBeforeTurns(t *testing.T) {
 	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
+	useImageCap(t, 900*1024)
 	payload := &KiroPayload{}
 	history := []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
 	for i := 0; i < 8; i++ {
@@ -79,8 +144,8 @@ func TestTruncatePayloadDropsOldImagesBeforeTurns(t *testing.T) {
 
 	truncatePayloadToLimit(payload, true)
 
-	if size := payloadByteSize(payload); size > maxPayloadBytes() {
-		t.Fatalf("payload still %d bytes", size)
+	if size := payloadImageBytes(payload); size > maxPayloadImageBytes {
+		t.Fatalf("images still %d bytes", size)
 	}
 	got := payload.ConversationState.History
 	if len(got) != len(history) {
@@ -151,9 +216,10 @@ func TestTruncateCurrentMessageKeepsValidUTF8(t *testing.T) {
 	}
 }
 
-// When the current message's images alone exceed the limit, dropping turns
-// cannot make the payload fit. It used to drop them anyway and blank the
-// user's text (live: 82 of 86 entries dropped, 1.6 MB still sent).
+// A current message whose images alone exceed the byte limit used to drop
+// history and blank the user's text (live: 82 of 86 entries dropped, 1.6 MB
+// still sent). Image data no longer counts toward that limit, so nothing is
+// shrunk at all.
 func TestTruncatePayloadKeepsHistoryWhenCurrentImagesAloneExceedLimit(t *testing.T) {
 	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
 	payload := &KiroPayload{}
@@ -175,8 +241,8 @@ func TestTruncatePayloadKeepsHistoryWhenCurrentImagesAloneExceedLimit(t *testing
 	if got := payload.ConversationState.CurrentMessage.UserInputMessage.Content; got != "what is in this screenshot?" {
 		t.Fatalf("current text must be kept, got %q", got)
 	}
-	if payload.Shrink.Stage != "oversize" || payload.Shrink.DroppedTurns != 0 {
-		t.Fatalf("shrink = %+v, want stage oversize and no dropped turns", payload.Shrink)
+	if payload.Shrink.Stage != "" || payload.Shrink.DroppedTurns != 0 {
+		t.Fatalf("shrink = %+v, want nothing shrunk", payload.Shrink)
 	}
 }
 
@@ -261,6 +327,72 @@ func sentHistory(seeds []int) []string {
 	return out
 }
 
+// sentForConversation is like sentHistory with a conversation ID, so the
+// remembered image cut applies, and images of imageKB KB. It also returns the
+// image data size sent.
+func sentForConversation(conv string, seeds []int, imageKB int) ([]string, int) {
+	payload := &KiroPayload{}
+	payload.ConversationState.ConversationID = conv
+	history := []KiroHistoryMessage{userTurn("system"), assistantTurn("I will follow these instructions.")}
+	for i, s := range seeds[:len(seeds)-1] {
+		history = append(history, userTurn(fmt.Sprintf("turn %d", i), kiroImage(fakePNG(s, imageKB*1024))), assistantTurn(fmt.Sprintf("ok %d", i)))
+	}
+	payload.ConversationState.History = history
+	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{
+		Content: "now", ModelID: "claude-sonnet-4.5", Images: []KiroImage{kiroImage(fakePNG(seeds[len(seeds)-1], imageKB*1024))},
+	}
+	dedupeKiroImages(payload)
+	truncatePayloadToLimit(payload, true)
+	out := make([]string, len(payload.ConversationState.History))
+	for i, h := range payload.ConversationState.History {
+		raw, _ := json.Marshal(h)
+		out[i] = string(raw)
+	}
+	return out, payloadImageBytes(payload)
+}
+
+func resetImageCuts(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		imageCutsMu.Lock()
+		imageCuts = make(map[string]imageCut)
+		imageCutsMu.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+}
+
+// CA2 conv c025ebb1 (2026-10-27): the fixed window cut every 3 user turns
+// once over the limit; 3 of 3 cuts were billed cold. With a conversation ID
+// the cut now stays put while the images fit their cap, so over 40 turns of
+// one new image each it moves far less often.
+func TestImageCutMovesRarelyWithConversationID(t *testing.T) {
+	useCompat(t, config.CompatSettings{MaxPayloadKB: 900})
+	useImageCap(t, 900*1024)
+	resetImageCuts(t)
+	seeds := imageTurns(60, nil)
+	moves, overLimit := 0, 0
+	var prev []string
+	for n := 20; n <= len(seeds); n++ {
+		cur, size := sentForConversation("conv-a", seeds[:n], 40)
+		if size > maxPayloadImageBytes {
+			overLimit++
+		}
+		if prev != nil && firstChange(prev, cur) >= 0 {
+			moves++
+		}
+		prev = cur
+	}
+	if overLimit > 0 {
+		t.Fatalf("%d payloads over the limit", overLimit)
+	}
+	// 40 KB a turn: the fixed window moves every 3 turns (~13 times); the
+	// remembered cut refills from half the limit, about every 11 turns.
+	if moves > 5 {
+		t.Fatalf("image cut moved %d times in 40 turns", moves)
+	}
+}
+
 // firstChange is the first index where an entry sent before differs now, or -1.
 func firstChange(prev, cur []string) int {
 	for i := 0; i < len(prev) && i < len(cur); i++ {
@@ -278,6 +410,7 @@ func firstChange(prev, cur []string) int {
 // rewrite makes Kiro write everything after it to its cache again.
 func TestShrinkDoesNotRewriteAgedEntryWhenImageIsAttachedAgain(t *testing.T) {
 	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
+	useImageCap(t, 900*1024)
 	seeds := imageTurns(14, map[int]int{12: 3})
 	prev := sentHistory(seeds[:12])
 	cur := sentHistory(seeds[:13])
@@ -291,6 +424,7 @@ func TestShrinkDoesNotRewriteAgedEntryWhenImageIsAttachedAgain(t *testing.T) {
 // every turn (243fc8a2: 16k–34k tokens of cache creation per turn).
 func TestShrinkDoesNotRewriteHistoryEveryTurn(t *testing.T) {
 	useCompat(t, config.CompatSettings{MaxPayloadKB: 900}) // fixtures are sized for a 900 KB limit
+	useImageCap(t, 900*1024)
 	seeds := imageTurns(20, nil)
 	rewrites := 0
 	prev := sentHistory(seeds[:10])

@@ -11,6 +11,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"kiro-go/config"
@@ -29,6 +31,16 @@ const (
 	// everything after it to its cache again: 16k–34k tokens a turn.
 	historyImageMinKeepUserTurns = 2
 	historyImageWindowStep       = 3
+
+	// With a conversation ID the cut is remembered instead (imageCuts): it
+	// stays put while the images fit maxPayloadImageBytes, and when it must
+	// move it goes down to imageCutTargetFraction of that cap. The fixed
+	// window above cut every 3 user turns even when one new screenshot pushed
+	// the payload over (CA2 conv c025ebb1, 2026-10-27; 3 of 3 late cuts billed
+	// cold, as Kiro misses its cache once an image is removed).
+	imageCutTargetFraction = 0.5
+	imageCutTTL            = 2 * time.Hour
+	imageCutMax            = 2048
 
 	// History text above historyTextCompactLimit bytes is cut to its head and
 	// tail when the payload is over the limit.
@@ -106,12 +118,16 @@ func dedupeKiroImages(payload *KiroPayload) {
 	}
 
 	dedupe(&payload.ConversationState.CurrentMessage.UserInputMessage)
-	// Turns past the image cut are left alone. Over the limit their images are
-	// dropped with a note that must not change once sent (re-attaching one of
-	// their images rewrote it, 243fc8a2); under it, an old duplicate costs less
-	// than Kiro writing the history after it to its cache again.
+	// Turns past the image cut are left alone: their images are dropped with a
+	// note that must not change once sent (re-attaching one of their images
+	// rewrote it, 243fc8a2). With a conversation ID that is the remembered cut
+	// (0 until the images first pass their cap), so the turns deduped stay the
+	// same from turn to turn; without one, the fixed window.
 	history := payload.ConversationState.History
 	aged := agedImageUserTurns(history)
+	if id := payload.ConversationState.ConversationID; id != "" {
+		aged = rememberedImageCut(id)
+	}
 	userTurn := historyUserTurns(history)
 	for i := len(history) - 1; i >= 0 && userTurn > aged; i-- {
 		if msg := history[i].UserInputMessage; msg != nil {
@@ -141,11 +157,135 @@ func agedImageUserTurns(history []KiroHistoryMessage) int {
 	return (n - historyImageMinKeepUserTurns) / historyImageWindowStep * historyImageWindowStep
 }
 
-// dropOldHistoryImages removes images from the user turns before the image
-// cut (agedImageUserTurns). It reports whether anything changed.
-func dropOldHistoryImages(history []KiroHistoryMessage, primingCount int) bool {
+type imageCut struct {
+	aged int // history user turns, oldest first, that lost their images
+	seen time.Time
+}
+
+var (
+	imageCutsMu sync.Mutex
+	imageCuts   = make(map[string]imageCut)
+)
+
+// maxPayloadImageBytes caps the base64 image data of a Kiro request. Kiro's
+// CONTENT_LENGTH_EXCEEDS_THRESHOLD counts text, not image data: on CA2
+// (2026-10-27) 8 images of ~400 KB added 0.16% context usage, and requests
+// with 3.2–5.6 MB of history images passed with every image read (as
+// minpeter/kiro-lb measured). So maxPayloadBytes() is compared with the
+// payload without image data, and images only have to fit this cap. 5.6 MB
+// was the largest total tested; above this cap old images are cut.
+var maxPayloadImageBytes = 6 << 20
+
+// imageDataBytes is the base64 image data size of images, as serialized.
+func imageDataBytes(images []KiroImage) int {
+	n := 0
+	for _, img := range images {
+		n += len(img.Source.Bytes)
+	}
+	return n
+}
+
+// payloadImageBytes is the base64 image data size of the whole payload.
+func payloadImageBytes(payload *KiroPayload) int {
+	n := imageDataBytes(payload.ConversationState.CurrentMessage.UserInputMessage.Images)
+	for _, entry := range payload.ConversationState.History {
+		if msg := entry.UserInputMessage; msg != nil {
+			n += imageDataBytes(msg.Images)
+		}
+	}
+	return n
+}
+
+// payloadTextBytes is the serialized payload size without image data, the
+// size Kiro's input limit applies to.
+func payloadTextBytes(payload *KiroPayload) int {
+	return payloadByteSize(payload) - payloadImageBytes(payload)
+}
+
+// historyEntryTextSize is historyEntryByteSize without image data.
+func historyEntryTextSize(entry KiroHistoryMessage) int {
+	size := historyEntryByteSize(entry)
+	if msg := entry.UserInputMessage; msg != nil {
+		size -= imageDataBytes(msg.Images)
+	}
+	return size
+}
+
+// rememberedImageCut is the conversation's current image cut, or 0.
+func rememberedImageCut(conversationID string) int {
+	if conversationID == "" {
+		return 0
+	}
+	imageCutsMu.Lock()
+	defer imageCutsMu.Unlock()
+	c, ok := imageCuts[conversationID]
+	if !ok || time.Since(c.seen) > imageCutTTL {
+		return 0
+	}
+	return c.aged
+}
+
+// chooseImageCut returns how many history user turns lose their images when
+// the payload's image data (imageTotal bytes) is over maxPayloadImageBytes.
+// Without a conversation ID it is the fixed window (agedImageUserTurns). With
+// one, the remembered cut is kept while the images fit with it; otherwise the
+// cut moves forward until they are under imageCutTargetFraction of the cap,
+// keeping images on at least historyImageMinKeepUserTurns history user turns.
+func chooseImageCut(conversationID string, history []KiroHistoryMessage, imageTotal int) int {
+	if conversationID == "" {
+		return agedImageUserTurns(history)
+	}
+	var imageBytes []int // per history user turn
+	for _, entry := range history {
+		if msg := entry.UserInputMessage; msg != nil {
+			imageBytes = append(imageBytes, imageDataBytes(msg.Images))
+		}
+	}
+	maxAged := len(imageBytes) - historyImageMinKeepUserTurns
+	if maxAged <= 0 {
+		return 0
+	}
+	sizeWith := func(aged int) int {
+		s := imageTotal
+		for _, b := range imageBytes[:aged] {
+			s -= b
+		}
+		return s
+	}
+	aged := minInt(rememberedImageCut(conversationID), maxAged)
+	if sizeWith(aged) > maxPayloadImageBytes {
+		target := int(float64(maxPayloadImageBytes) * imageCutTargetFraction)
+		for aged < maxAged && sizeWith(aged) > target {
+			aged++
+		}
+	}
+	rememberImageCut(conversationID, aged)
+	return aged
+}
+
+func rememberImageCut(conversationID string, aged int) {
+	now := time.Now()
+	imageCutsMu.Lock()
+	defer imageCutsMu.Unlock()
+	imageCuts[conversationID] = imageCut{aged: aged, seen: now}
+	if len(imageCuts) <= imageCutMax {
+		return
+	}
+	for id, c := range imageCuts {
+		if now.Sub(c.seen) > imageCutTTL || id != conversationID {
+			delete(imageCuts, id)
+			if len(imageCuts) <= imageCutMax {
+				return
+			}
+		}
+	}
+}
+
+// dropOldHistoryImages removes images from the first aged history user turns
+// (oldest first, the system priming included). It reports whether anything
+// changed.
+func dropOldHistoryImages(history []KiroHistoryMessage, primingCount, aged int) bool {
 	changed := false
-	aged := agedImageUserTurns(history)
 	userTurn := 0
 	for i := 0; i < len(history) && userTurn < aged; i++ {
 		msg := history[i].UserInputMessage
