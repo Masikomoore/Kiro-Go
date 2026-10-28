@@ -1048,6 +1048,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 			continue
 		}
 		cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
+		cachedAtFirstByte := false
 		messageStartUsage = cacheUsage
 
 		var inputTokens, outputTokens int
@@ -1375,6 +1376,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 				// Like Anthropic, the prefix is cached once the response
 				// begins, so an overlapping request (a client retry) reads it.
 				h.promptCache.Update(account.ID, cacheProfile)
+				cachedAtFirstByte = true
 			},
 		}
 
@@ -1462,7 +1464,11 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.promptCache.Update(account.ID, cacheProfile)
+		// Kiro's TTL counts from the first byte (a turn 302 s after it went
+		// cold live); refreshing here would stretch it by the stream time.
+		if !cachedAtFirstByte {
+			h.promptCache.Update(account.ID, cacheProfile)
+		}
 		logPromptCacheUsage(shortConversationID(payload), model, cacheProfile, cacheUsage, inputTokens, outputTokens, credits)
 		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
@@ -1663,6 +1669,7 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 			continue
 		}
 		cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
+		cachedAtFirstByte := false
 
 		var content string
 		var thinkingContent string
@@ -1700,6 +1707,7 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 				// See handleClaudeStream: the prefix is cached once the
 				// response begins.
 				h.promptCache.Update(account.ID, cacheProfile)
+				cachedAtFirstByte = true
 			},
 		}
 
@@ -1761,7 +1769,10 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.promptCache.Update(account.ID, cacheProfile)
+		// See handleClaudeStream: the TTL counts from the first byte.
+		if !cachedAtFirstByte {
+			h.promptCache.Update(account.ID, cacheProfile)
+		}
 		logPromptCacheUsage(shortConversationID(payload), model, cacheProfile, cacheUsage, inputTokens, outputTokens, credits)
 		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 

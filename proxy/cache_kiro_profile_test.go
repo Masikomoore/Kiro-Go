@@ -357,3 +357,52 @@ func TestOverlappingRequestReadsPrefixOnceFirstResponseBegins(t *testing.T) {
 		t.Fatalf("overlapping retry must read the cached prefix, got body %s", rec.Body.String())
 	}
 }
+
+// Kiro's cache entry lives about 5 minutes from when its response begins, not
+// from the end of the stream (live 2026-10-28: a turn 302 s after the previous
+// first byte was billed cold, one at 298 s read). The end of the stream must
+// not push the simulated expiry later.
+func TestPromptCacheExpiryCountsFromFirstByte(t *testing.T) {
+	const tail = 400 * time.Millisecond
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "partial"}))
+		w.(http.Flusher).Flush()
+		time.Sleep(tail)
+		_, _ = w.Write(awsEventStreamFrame(t, "metadataEvent", map[string]interface{}{"stopReason": "end_turn"}))
+	}))
+	defer server.Close()
+	h := setupFailoverTest(t, server, failoverAccounts("ttl")[:1]...)
+
+	for _, stream := range []bool{true, false} {
+		h.promptCache.mu.Lock()
+		h.promptCache.entriesByScope = map[string]map[[32]byte]promptCacheEntry{}
+		h.promptCache.mu.Unlock()
+		body, _ := json.Marshal(map[string]interface{}{
+			"model": "claude-sonnet-4.5", "max_tokens": 100, "stream": stream,
+			"system": strings.Repeat("You are WorkBuddy, a desktop assistant. ", 150),
+			"messages": []interface{}{
+				map[string]interface{}{"role": "user", "content": "question 0: " + strings.Repeat("explain the module. ", 120)},
+				map[string]interface{}{"role": "assistant", "content": "answer 0: " + strings.Repeat("it handles requests. ", 120)},
+				map[string]interface{}{"role": "user", "content": "question 1"},
+			},
+		})
+		h.handleClaudeMessages(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body))))
+		end := time.Now()
+
+		h.promptCache.mu.Lock()
+		n := 0
+		for _, entries := range h.promptCache.entriesByScope {
+			for _, e := range entries {
+				n++
+				if latest := end.Add(e.TTL - tail/2); e.ExpiresAt.After(latest) {
+					t.Errorf("stream=%v: entry expires %v after the end of the stream, want the first byte + TTL", stream, e.ExpiresAt.Sub(end))
+				}
+			}
+		}
+		h.promptCache.mu.Unlock()
+		if n == 0 {
+			t.Fatalf("stream=%v: no prefix cached", stream)
+		}
+	}
+}
