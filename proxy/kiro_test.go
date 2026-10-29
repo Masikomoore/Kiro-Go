@@ -546,7 +546,7 @@ func TestParseEventStreamTrackedRejectsIncompleteToolOnCleanEOF(t *testing.T) {
 	}
 }
 
-func TestCallKiroAPIRetriesAPIKeyEndpointAfterEmptyStream(t *testing.T) {
+func TestCallKiroAPIRetriesAPIKeyEndpointAfterDroppedStream(t *testing.T) {
 	var calls, completed int
 	var text string
 	var attempts, invocationIDs, hosts []string
@@ -556,7 +556,10 @@ func TestCallKiroAPIRetriesAPIKeyEndpointAfterEmptyStream(t *testing.T) {
 		invocationIDs = append(invocationIDs, req.Header.Get("Amz-Sdk-Invocation-Id"))
 		hosts = append(hosts, req.URL.Host)
 		if calls == 1 {
-			return kiroStreamTestResponse(bytes.NewReader(nil)), nil
+			return kiroStreamTestResponse(&truncatedReader{
+				data: []byte{0, 0, 1},
+				err:  io.ErrUnexpectedEOF,
+			}), nil
 		}
 		return kiroStreamTestResponse(bytes.NewReader(awsEventStreamFrame(t,
 			"assistantResponseEvent", map[string]interface{}{"content": "recovered"}))), nil
@@ -651,6 +654,25 @@ func TestCallKiroAPIRetriesCurrentEndpointBeforeFallback(t *testing.T) {
 	}
 	if text != "fallback" || completed != 1 {
 		t.Fatalf("text=%q completed=%d, want fallback and one completion", text, completed)
+	}
+}
+
+func TestCallKiroAPIReturnsEmptyStreamWithoutEndpointRetry(t *testing.T) {
+	installKiroRetryTestEndpoints(t)
+
+	var trace []string
+	installKiroStreamTestClient(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		trace = append(trace, req.URL.Host)
+		return kiroStreamTestResponse(bytes.NewReader(nil)), nil
+	}))
+	installKiroRetryWait(t, func(time.Duration) { trace = append(trace, "wait") })
+
+	err := CallKiroAPI(newKiroRetryTestOAuthAccount(), newKiroRetryTestPayload(), &KiroStreamCallback{})
+	if !errors.Is(err, errEmptyKiroStream) {
+		t.Fatalf("expected errEmptyKiroStream, got %v", err)
+	}
+	if got := strings.Join(trace, ","); got != "first.example" {
+		t.Fatalf("request trace = %q, want one request and no wait", got)
 	}
 }
 

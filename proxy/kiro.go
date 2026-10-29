@@ -721,6 +721,13 @@ endpointLoop:
 			if !isRetryableStreamError(err) {
 				return err
 			}
+			// A clean stream with no output is Kiro declining the request, not
+			// a dropped connection: on 2026-10-29 3375 such attempts on other
+			// endpoints and accounts recovered none. Leave it to the account
+			// loop so the client's gateway can fail over within seconds.
+			if errors.Is(err, errEmptyKiroStream) {
+				return err
+			}
 
 			hasSameEndpointRetry := streamAttempt < maxStreamAttemptsPerEndpoint
 			hasEndpointFallback := epIndex+1 < len(endpoints)
