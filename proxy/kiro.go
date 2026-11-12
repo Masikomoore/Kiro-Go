@@ -573,6 +573,7 @@ endpointLoop:
 		}
 		headerValues := buildStreamingHeaderValues(account, host)
 		invocationID := uuid.New().String()
+		versionRefreshed := false
 
 		for streamAttempt := 1; streamAttempt <= maxStreamAttemptsPerEndpoint; streamAttempt++ {
 			if err := ctx.Err(); err != nil {
@@ -663,6 +664,15 @@ endpointLoop:
 				endAttempt(nil)
 				httpErr := newKiroHTTPError(resp, ep.Name, errBody)
 				lastErr = httpErr
+				if !versionRefreshed && isUnsupportedKiroVersionBody(httpErr.Body) {
+					versionRefreshed = true
+					beforeVer := config.GetKiroClientConfig().KiroVersion
+					if refreshKiroVersionOnDemand(ctx) && config.GetKiroClientConfig().KiroVersion != beforeVer {
+						headerValues = buildStreamingHeaderValues(account, host)
+						streamAttempt--
+						continue
+					}
+				}
 				class := classifyKiroHTTPError(resp.StatusCode, httpErr.Body)
 				if cliTrial {
 					logger.Warnf("[KiroAPI] CLI runtime trial for %s failed (%s), falling back: %v", accountEmailForLog(account), class, httpErr)

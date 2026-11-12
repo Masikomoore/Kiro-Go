@@ -363,12 +363,14 @@ func (h *Handler) backgroundRefresh() {
 
 	// 启动时延迟 10 秒后执行一次
 	time.Sleep(10 * time.Second)
+	refreshKiroVersionIfStale(false)
 	h.refreshModelsCache()
 	h.refreshAllAccounts()
 
 	for {
 		select {
 		case <-ticker.C:
+			refreshKiroVersionIfStale(false)
 			h.refreshModelsCache()
 			h.refreshAllAccounts()
 		case <-h.stopRefresh:

@@ -19,6 +19,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1376,6 +1377,57 @@ func UpdateLogLevel(level string) error {
 	return Save()
 }
 
+const DefaultKiroVersion = "1.4.154"
+
+var autoKiroVersion string
+
+// SetAutoKiroVersion records the latest Kiro IDE release discovered from the
+// official update metadata endpoint. Returns true when the stored value changed.
+func SetAutoKiroVersion(version string) bool {
+	version = strings.TrimSpace(version)
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if autoKiroVersion == version {
+		return false
+	}
+	autoKiroVersion = version
+	return true
+}
+
+// GetAutoKiroVersion returns the auto-discovered Kiro IDE release, if any.
+func GetAutoKiroVersion() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	return autoKiroVersion
+}
+
+// CompareVersionStrings compares two dotted numeric version strings (e.g. "0.11.107" vs "1.4.154").
+// Returns -1 if a < b, 0 if a == b, and 1 if a > b.
+func CompareVersionStrings(a, b string) int {
+	aParts := strings.Split(strings.TrimPrefix(strings.TrimSpace(a), "v"), ".")
+	bParts := strings.Split(strings.TrimPrefix(strings.TrimSpace(b), "v"), ".")
+	n := len(aParts)
+	if len(bParts) > n {
+		n = len(bParts)
+	}
+	for i := 0; i < n; i++ {
+		var ai, bi int
+		if i < len(aParts) {
+			ai, _ = strconv.Atoi(aParts[i])
+		}
+		if i < len(bParts) {
+			bi, _ = strconv.Atoi(bParts[i])
+		}
+		if ai < bi {
+			return -1
+		}
+		if ai > bi {
+			return 1
+		}
+	}
+	return 0
+}
+
 type KiroClientConfig struct {
 	KiroVersion   string
 	SystemVersion string
@@ -1386,9 +1438,17 @@ func GetKiroClientConfig() KiroClientConfig {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()
 
-	kiroVersion := "0.11.107"
-	if cfg != nil && cfg.KiroVersion != "" {
-		kiroVersion = cfg.KiroVersion
+	kiroVersion := DefaultKiroVersion
+	if cfg != nil && strings.TrimSpace(cfg.KiroVersion) != "" {
+		if CompareVersionStrings(cfg.KiroVersion, kiroVersion) > 0 {
+			kiroVersion = strings.TrimSpace(cfg.KiroVersion)
+		}
+	}
+	if autoKiroVersion != "" && CompareVersionStrings(autoKiroVersion, kiroVersion) > 0 {
+		kiroVersion = autoKiroVersion
+	}
+	if envVer := strings.TrimSpace(os.Getenv("KIRO_VERSION")); envVer != "" {
+		kiroVersion = envVer
 	}
 
 	systemVersion := ""
