@@ -881,8 +881,22 @@
     if (s.includes('PRO')) return '<span class="badge badge-pro">' + escapeHtml(formatSubscriptionLabel(type)) + '</span>';
     return '<span class="badge badge-free">' + escapeHtml(formatSubscriptionLabel(type)) + '</span>';
   }
+  // Bonus entries from getUsageLimits (e.g. 500 "Trial credits" from a first upgrade) that can still be spent.
+  function usableBonuses(a) {
+    const now = Date.now() / 1000;
+    return (a.bonuses || []).filter(b => String(b.status || '').toUpperCase() === 'ACTIVE' && (!b.expiresAt || b.expiresAt > now));
+  }
+  function extraCreditsLeft(a) {
+    const now = Date.now() / 1000;
+    let left = 0;
+    if (a.trialStatus === 'ACTIVE' && (!a.trialExpiresAt || a.trialExpiresAt > now)) {
+      left += Math.max(0, (a.trialUsageLimit || 0) - (a.trialUsageCurrent || 0));
+    }
+    usableBonuses(a).forEach(b => { left += Math.max(0, (b.limit || 0) - (b.current || 0)); });
+    return left;
+  }
   function getTrialBadge(a) {
-    if (a.trialStatus === 'ACTIVE' && a.trialUsageLimit > 0) {
+    if ((a.trialStatus === 'ACTIVE' && a.trialUsageLimit > 0) || usableBonuses(a).length) {
       return '<span class="badge badge-trial">' + escapeHtml(t('accounts.trial')) + '</span>';
     }
     return '';
@@ -959,7 +973,7 @@
 
   // Out of credits: the same rule the pool uses to skip over-quota accounts.
   function isAccountExhausted(a) {
-    return a.usageLimit > 0 && (a.usageCurrent || 0) >= a.usageLimit;
+    return a.usageLimit > 0 && (a.usageCurrent || 0) >= a.usageLimit && extraCreditsLeft(a) <= 0;
   }
   // 0 = usable, 1 = out of credits, 2 = disabled. Lower tiers sort later.
   function accountTier(a) {
@@ -1018,7 +1032,7 @@
   }
   function groupCreditsLeft(accounts) {
     return accounts.reduce((sum, a) => (accountTier(a) === 0 && a.usageLimit > 0)
-      ? sum + (a.usageLimit - (a.usageCurrent || 0)) : sum, 0);
+      ? sum + Math.max(0, a.usageLimit - (a.usageCurrent || 0)) + extraCreditsLeft(a) : sum, 0);
   }
   // Why an account cannot be dragged, as an i18n key; empty when it can.
   function accountDragBlockKey(a) {
@@ -1026,6 +1040,40 @@
     if (accountTier(a) === 2) return 'accounts.dragDisabled';
     if (accountTier(a) === 1) return 'accounts.dragExhausted';
     return '';
+  }
+
+  function renderBonusUsage(b) {
+    const pct = quotaPercent(b.current, b.limit);
+    const cls = pct > 90 ? 'critical' : pct > 70 ? 'high' : '';
+    return '<div class="account-usage">' +
+      '<div class="usage-label">' + escapeHtml(b.name || t('accounts.bonusCredits')) + ' ' + escapeHtml(formatTrialExpiry(b.expiresAt)) + '</div>' +
+      '<div class="usage-bar"><div class="usage-fill ' + cls + '" data-usage-pct="' + escapeAttr(pct) + '"></div></div>' +
+      '<div class="usage-text"><span>' + (b.current || 0).toFixed(1) + ' / ' + (b.limit || 0).toFixed(0) + '</span><span>' + pct.toFixed(1) + '%</span></div>' +
+      '</div>';
+  }
+  function apiKeyName(id) {
+    const k = apiKeysCache.find(x => x.id === id);
+    return k ? (k.name || k.keyMasked || id) : id;
+  }
+  function getApiKeyBadge(a) {
+    const ids = a.apiKeyIds || [];
+    if (!ids.length) return '';
+    const names = ids.map(apiKeyName).join(', ');
+    return '<span class="badge badge-muted" title="' + escapeAttr(t('accounts.boundToKeys', names)) + '">' +
+      '<i class="fa-solid fa-key" aria-hidden="true"></i> ' + escapeHtml(names) + '</span>';
+  }
+  // A checkbox list for binding accounts and API keys. items: [{id, label, note}].
+  function renderBindList(items, checked, emptyText) {
+    if (!items.length) return '<div class="muted-text text-xs">' + escapeHtml(emptyText) + '</div>';
+    return items.map(it =>
+      '<label class="bind-item"><input type="checkbox" value="' + escapeAttr(it.id) + '"' + (checked.includes(it.id) ? ' checked' : '') + ' />' +
+      '<span>' + escapeHtml(it.label) + '</span>' +
+      (it.note ? '<span class="muted-text text-xs">' + escapeHtml(it.note) + '</span>' : '') +
+      '</label>'
+    ).join('');
+  }
+  function checkedValues(container) {
+    return Array.from(container.querySelectorAll('input[type=checkbox]:checked')).map(x => x.value);
   }
 
   function renderAccountCard(a) {
@@ -1075,6 +1123,7 @@
       weightBadge +
       priorityBadge +
       overageBadge +
+      getApiKeyBadge(a) +
       getProxyBadge(a) +
       '<span class="badge badge-info">' + escapeHtml(formatAuthMethod(a.provider || a.authMethod)) + '</span>' +
       getStatusBadge(a) +
@@ -1106,6 +1155,7 @@
           '<div class="usage-bar"><div class="usage-fill ' + trialClass + '" data-usage-pct="' + escapeAttr(trialPct) + '"></div></div>' +
           '<div class="usage-text"><span>' + (a.trialUsageCurrent != null ? a.trialUsageCurrent.toFixed(1) : 0) + ' / ' + (a.trialUsageLimit != null ? a.trialUsageLimit.toFixed(0) : 0) + '</span><span>' + trialPct.toFixed(1) + '%</span></div>' +
           '</div>' : '') +
+        usableBonuses(a).map(renderBonusUsage).join('') +
         (size === 'large' ?
           '<div class="account-stats">' +
           '<div class="account-stat"><div class="account-stat-value">' + (a.requestCount || 0) + '</div><div class="account-stat-label">' + escapeHtml(t('accounts.requests')) + '</div></div>' +
@@ -1546,6 +1596,14 @@
       '<button class="btn btn-sm btn-primary" data-detail-action="savePriority" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.save')) + '</button>' +
       '</div>' +
 
+      '<div class="detail-section"><h4>' + escapeHtml(t('detail.apiKeys')) + '</h4>' +
+      '<div class="bind-list" id="accountApiKeysList">' +
+      renderBindList(apiKeysCache.map(k => ({ id: k.id, label: k.name || k.keyMasked, note: k.name ? k.keyMasked : '' })), a.apiKeyIds || [], t('apiKeys.empty')) +
+      '</div>' +
+      '<p class="help-block">' + escapeHtml(t('detail.apiKeysHint')) + '</p>' +
+      '<button class="btn btn-sm btn-primary" data-detail-action="saveApiKeys" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.save')) + '</button>' +
+      '</div>' +
+
       '<div class="detail-section">' +
       '<h4>' + escapeHtml(t('detail.overage')) +
       ' <button class="btn btn-sm btn-outline" data-detail-action="refreshOverage" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.overageRefresh')) + '</button>' +
@@ -1572,6 +1630,10 @@
         detailItem(t('detail.trialStatus'), a.trialStatus || '-') +
         detailItem(t('detail.trialExpiry'), a.trialExpiresAt ? new Date(a.trialExpiresAt * 1000).toLocaleString() : '-')
         : '') +
+      (a.bonuses || []).map(b =>
+        detailItem(b.name || t('accounts.bonusCredits'), (b.current || 0).toFixed(1) + ' / ' + (b.limit || 0).toFixed(0) + ' · ' + (b.status || '-')) +
+        detailItem(t('detail.bonusExpiry'), b.expiresAt ? new Date(b.expiresAt * 1000).toLocaleString() : '-')
+      ).join('') +
       '</div></div>' +
 
       '<div class="detail-section"><h4>' + escapeHtml(t('detail.statistics')) + '</h4><div class="detail-grid">' +
@@ -1653,6 +1715,10 @@
   async function saveWeight(id) {
     const weight = parseInt($('weightInput').value, 10) || 0;
     await putAccount(id, { weight }, t('detail.saved'));
+  }
+  async function saveAccountApiKeys(id) {
+    await putAccount(id, { apiKeyIds: checkedValues($('accountApiKeysList')) }, t('detail.saved'));
+    loadApiKeys();
   }
   async function savePriority(id) {
     const priority = Math.max(0, parseInt($('priorityInput').value, 10) || 0);
@@ -2247,6 +2313,7 @@
       const d = await res.json();
       apiKeysCache = Array.isArray(d.apiKeys) ? d.apiKeys : [];
       renderApiKeys();
+      if (accountsData.length) renderAccounts(); // key-name badges on account cards
     } catch (e) {
       apiKeysCache = [];
       list.innerHTML = '<div class="muted-text" style="padding:0.5rem 0;">' + escapeHtml(t('apiKeys.loadFailed')) + '</div>';
@@ -2300,6 +2367,8 @@
       const tokensLine = usageLine(t('apiKeys.tokens'), item.tokensUsed || 0, item.tokenLimit || 0);
       const creditsLine = usageLine(t('apiKeys.credits'), item.creditsUsed || 0, item.creditLimit || 0);
       const requestsLine = '<div class="text-xs muted-text">' + escapeHtml(t('apiKeys.requests')) + ': ' + escapeHtml(formatNumber(item.requestsCount || 0)) + '</div>';
+      const boundCount = (item.accountIds || []).length;
+      const accountsLine = '<div class="text-xs muted-text">' + escapeHtml(boundCount ? t('apiKeys.boundAccounts', boundCount) : t('apiKeys.sharedPool')) + '</div>';
       return '<div class="card" data-apikey-id="' + id + '" style="margin-top:0.5rem;padding:0.75rem;">' +
         '<div class="flex items-center gap-2" style="flex-wrap:wrap;justify-content:space-between;">' +
           '<div class="flex items-center gap-2" style="flex-wrap:wrap;">' +
@@ -2322,6 +2391,7 @@
           tokensLine +
           creditsLine +
           requestsLine +
+          accountsLine +
         '</div>' +
       '</div>';
     }).join('');
@@ -2344,6 +2414,14 @@
     $('apiKeyForm_enabled').checked = entry ? !!entry.enabled : true;
     $('apiKeyForm_tokenLimit').value = entry ? String(entry.tokenLimit || 0) : '0';
     $('apiKeyForm_creditLimit').value = entry ? String(entry.creditLimit || 0) : '0';
+    const items = accountsData.map(a => {
+      const others = apiKeysCache.filter(k => k.id !== apiKeyEditingId && (k.accountIds || []).includes(a.id)).map(k => k.name || k.keyMasked);
+      // Masked emails can look alike, so show the proxy label and short ID too.
+      const meta = [a.proxyURL ? getProxyLabel(a.proxyURL) : '', '#' + String(a.id).slice(0, 8)].filter(Boolean).join(' · ');
+      const note = [meta, others.length ? t('accounts.boundToKeys', others.join(', ')) : ''].filter(Boolean).join(' · ');
+      return { id: a.id, label: a.nickname || getDisplayEmail(a.email, a.id), note: note };
+    });
+    $('apiKeyForm_accounts').innerHTML = renderBindList(items, entry ? (entry.accountIds || []) : [], t('accounts.empty'));
     apiKeyModalSubmitting = false;
     $('apiKeyModalSaveBtn').disabled = false;
     openDialog('apiKeyModal');
@@ -2370,7 +2448,8 @@
         name: name,
         enabled: enabled,
         tokenLimit: isNaN(tokenLimit) || tokenLimit < 0 ? 0 : tokenLimit,
-        creditLimit: isNaN(creditLimit) || creditLimit < 0 ? 0 : creditLimit
+        creditLimit: isNaN(creditLimit) || creditLimit < 0 ? 0 : creditLimit,
+        accountIds: checkedValues($('apiKeyForm_accounts'))
       };
       let res, d;
       if (apiKeyEditingId) {
@@ -2380,6 +2459,7 @@
         toast(t('apiKeys.updated'), 'success');
         closeApiKeyModal();
         await loadApiKeys();
+        loadAccounts();
       } else {
         const keyVal = $('apiKeyForm_key').value.trim();
         if (keyVal) payload.key = keyVal;
@@ -2389,6 +2469,7 @@
         toast(t('apiKeys.created'), 'success');
         closeApiKeyModal();
         await loadApiKeys();
+        loadAccounts();
         if (d.key) showNewApiKey(d.key);
       }
     } catch (e) {
@@ -3866,6 +3947,7 @@
       if (a === 'saveMachineId') saveMachineId(id);
       else if (a === 'saveWeight') saveWeight(id);
       else if (a === 'savePriority') savePriority(id);
+      else if (a === 'saveApiKeys') saveAccountApiKeys(id);
       else if (a === 'toggleOverage') toggleOverageSwitch(id, b);
       else if (a === 'refreshOverage') refreshAccountOverage(id);
       else if (a === 'saveProxyURL') saveProxyURL(id);

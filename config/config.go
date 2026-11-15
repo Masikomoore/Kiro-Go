@@ -136,12 +136,49 @@ type Account struct {
 	TrialStatus       string  `json:"trialStatus,omitempty"`       // Trial status: ACTIVE, EXPIRED, NONE
 	TrialExpiresAt    int64   `json:"trialExpiresAt,omitempty"`    // Trial expiration timestamp (Unix seconds)
 
+	// Bonuses mirrors getUsageLimits `usageBreakdownList[0].bonuses`. Since
+	// 2026-11-01 a first paid upgrade grants 500 "Trial credits" here
+	// (bonusType FIRST_UPGRADE_TRIAL, 12 months) instead of in freeTrialInfo.
+	// Kiro spends plan credits first, then these.
+	Bonuses []BonusCredit `json:"bonuses,omitempty"`
+
 	// Runtime statistics (updated during operation)
 	RequestCount int     `json:"requestCount,omitempty"` // Total requests processed
 	ErrorCount   int     `json:"errorCount,omitempty"`   // Total errors encountered
 	LastUsed     int64   `json:"lastUsed,omitempty"`     // Last request timestamp
 	TotalTokens  int     `json:"totalTokens,omitempty"`  // Cumulative tokens processed
 	TotalCredits float64 `json:"totalCredits,omitempty"` // Cumulative credits consumed
+}
+
+// BonusCredit is one entry of getUsageLimits `bonuses`.
+type BonusCredit struct {
+	Code      string  `json:"code,omitempty"`
+	Type      string  `json:"type,omitempty"` // e.g. FIRST_UPGRADE_TRIAL
+	Name      string  `json:"name,omitempty"` // displayName, e.g. "Trial credits"
+	Current   float64 `json:"current"`
+	Limit     float64 `json:"limit"`
+	ExpiresAt int64   `json:"expiresAt,omitempty"` // Unix seconds; 0 = no expiry
+	Status    string  `json:"status,omitempty"`    // ACTIVE, ...
+}
+
+// Usable reports whether the bonus is ACTIVE and not yet expired at now.
+func (b BonusCredit) Usable(now int64) bool {
+	return strings.EqualFold(b.Status, "ACTIVE") && (b.ExpiresAt == 0 || b.ExpiresAt > now)
+}
+
+// ExtraCreditsRemaining is what an account can still spend once its plan
+// credits run out: an ACTIVE legacy free trial plus every usable bonus.
+func (a *Account) ExtraCreditsRemaining(now int64) float64 {
+	var left float64
+	if strings.EqualFold(a.TrialStatus, "ACTIVE") && (a.TrialExpiresAt == 0 || a.TrialExpiresAt > now) {
+		left += max(0, a.TrialUsageLimit-a.TrialUsageCurrent)
+	}
+	for _, b := range a.Bonuses {
+		if b.Usable(now) {
+			left += max(0, b.Limit-b.Current)
+		}
+	}
+	return left
 }
 
 // PromptFilterRule defines a single custom prompt sanitization rule.
@@ -176,6 +213,10 @@ type ApiKeyEntry struct {
 	TokensUsed    int64   `json:"tokensUsed,omitempty"`
 	CreditsUsed   float64 `json:"creditsUsed,omitempty"`
 	RequestsCount int64   `json:"requestsCount,omitempty"`
+
+	// AccountIDs binds accounts to this key. A key with bound accounts uses
+	// only them, and no other key may use them. Empty = the shared pool.
+	AccountIDs []string `json:"accountIds,omitempty"`
 }
 
 // Config represents the global application configuration.
@@ -276,6 +317,7 @@ type AccountInfo struct {
 	TrialUsagePercent float64
 	TrialStatus       string
 	TrialExpiresAt    int64
+	Bonuses           []BonusCredit
 }
 
 // Version current version
@@ -1119,6 +1161,7 @@ func UpdateAccountInfo(id string, info AccountInfo) error {
 			cfg.Accounts[i].TrialUsagePercent = info.TrialUsagePercent
 			cfg.Accounts[i].TrialStatus = info.TrialStatus
 			cfg.Accounts[i].TrialExpiresAt = info.TrialExpiresAt
+			cfg.Accounts[i].Bonuses = info.Bonuses
 			return Save()
 		}
 	}

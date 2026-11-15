@@ -2738,6 +2738,8 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"trialUsagePercent": a.TrialUsagePercent,
 			"trialStatus":       a.TrialStatus,
 			"trialExpiresAt":    a.TrialExpiresAt,
+			"bonuses":           a.Bonuses,
+			"apiKeyIds":         config.ApiKeyIDsForAccount(a.ID),
 			"requestCount":      stats.RequestCount,
 			"errorCount":        stats.ErrorCount,
 			"totalTokens":       stats.TotalTokens,
@@ -2833,6 +2835,19 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	}
 	if v, ok := updates["proxyURL"].(string); ok {
 		existing.ProxyURL = v
+	}
+	if raw, ok := updates["apiKeyIds"].([]interface{}); ok {
+		keyIDs := make([]string, 0, len(raw))
+		for _, v := range raw {
+			if id, ok := v.(string); ok {
+				keyIDs = append(keyIDs, id)
+			}
+		}
+		if err := config.SetAccountApiKeys(id, keyIDs); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	if err := config.UpdateAccount(id, *existing); err != nil {
@@ -4685,6 +4700,8 @@ func (h *Handler) apiGetAccountFull(w http.ResponseWriter, r *http.Request, id s
 		"trialUsagePercent": account.TrialUsagePercent,
 		"trialStatus":       account.TrialStatus,
 		"trialExpiresAt":    account.TrialExpiresAt,
+		"bonuses":           account.Bonuses,
+		"apiKeyIds":         config.ApiKeyIDsForAccount(account.ID),
 		"requestCount":      stats.RequestCount,
 		"errorCount":        stats.ErrorCount,
 		"totalTokens":       stats.TotalTokens,

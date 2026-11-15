@@ -93,7 +93,7 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 		// this round's searches fit under max_uses.
 		roundSearchN := countWebSearchToolUses(round.toolUses)
 		if shouldSearchRound(roundIdx, round.toolUses, maxUses) && searchCount+roundSearchN <= maxUses {
-			searched, searchErr := h.searchAllWebUses(req.Model, round.toolUses)
+			searched, searchErr := h.searchAllWebUses(ctx, req.Model, round.toolUses)
 			if searchErr != nil {
 				logger.Warnf("[WebSearchLoop] MCP search failed: %v", searchErr)
 				h.recordFailureWithDetails("claude", req.Model, lastAccountID, searchErr)
@@ -117,7 +117,7 @@ func (h *Handler) runWebSearchLoop(ctx context.Context, w http.ResponseWriter, r
 				logger.Warnf("[WebSearchLoop] max_uses=%d reached; skipping further web_search", maxUses)
 				break
 			}
-			results, _, _, sErr := h.performWebSearch(req.Model, toolUseQuery(tu.Input))
+			results, _, _, sErr := h.performWebSearch(ctx, req.Model, toolUseQuery(tu.Input))
 			if sErr != nil {
 				logger.Warnf("[WebSearchLoop] final-round MCP search failed: %v", sErr)
 				h.recordFailureWithDetails("claude", req.Model, lastAccountID, sErr)
@@ -333,10 +333,10 @@ func countWebSearchToolUses(toolUses []KiroToolUse) int {
 }
 
 // searchAllWebUses runs MCP for each tool_use in order (all are web_search).
-func (h *Handler) searchAllWebUses(model string, toolUses []KiroToolUse) ([]*WebSearchResults, error) {
+func (h *Handler) searchAllWebUses(ctx context.Context, model string, toolUses []KiroToolUse) ([]*WebSearchResults, error) {
 	out := make([]*WebSearchResults, 0, len(toolUses))
 	for _, tu := range toolUses {
-		results, _, _, err := h.performWebSearch(model, toolUseQuery(tu.Input))
+		results, _, _, err := h.performWebSearch(ctx, model, toolUseQuery(tu.Input))
 		if err != nil {
 			return nil, err
 		}

@@ -763,8 +763,8 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 	// 解析使用量
 	if len(usage.UsageBreakdownList) > 0 {
 		breakdown := usage.UsageBreakdownList[0]
-		info.UsageCurrent = breakdown.CurrentUsage
-		info.UsageLimit = breakdown.UsageLimit
+		info.UsageCurrent = precise(breakdown.CurrentUsagePrecise, breakdown.CurrentUsage)
+		info.UsageLimit = precise(breakdown.UsageLimitPrecise, breakdown.UsageLimit)
 		if info.UsageLimit > 0 {
 			info.UsagePercent = info.UsageCurrent / info.UsageLimit
 		}
@@ -783,8 +783,8 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 	if len(usage.UsageBreakdownList) > 0 {
 		breakdown := usage.UsageBreakdownList[0]
 		if breakdown.FreeTrialInfo != nil {
-			info.TrialUsageCurrent = breakdown.FreeTrialInfo.CurrentUsage
-			info.TrialUsageLimit = breakdown.FreeTrialInfo.UsageLimit
+			info.TrialUsageCurrent = precise(breakdown.FreeTrialInfo.CurrentUsagePrecise, breakdown.FreeTrialInfo.CurrentUsage)
+			info.TrialUsageLimit = precise(breakdown.FreeTrialInfo.UsageLimitPrecise, breakdown.FreeTrialInfo.UsageLimit)
 			if info.TrialUsageLimit > 0 {
 				info.TrialUsagePercent = info.TrialUsageCurrent / info.TrialUsageLimit
 			}
@@ -798,6 +798,21 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 					info.TrialExpiresAt = int64(f)
 				}
 			}
+		}
+	}
+
+	// 解析奖励额度（含 2026-11-01 起首次升级赠送的 500 Trial credits）
+	if len(usage.UsageBreakdownList) > 0 {
+		for _, b := range usage.UsageBreakdownList[0].Bonuses {
+			info.Bonuses = append(info.Bonuses, config.BonusCredit{
+				Code:      b.BonusCode,
+				Type:      b.BonusType,
+				Name:      b.DisplayName,
+				Current:   precise(b.CurrentUsagePrecise, b.CurrentUsage),
+				Limit:     precise(b.UsageLimitPrecise, b.UsageLimit),
+				ExpiresAt: jsonNumberUnix(b.ExpiresAt),
+				Status:    b.Status,
+			})
 		}
 	}
 
@@ -818,6 +833,30 @@ func parseSubscriptionType(raw string) string {
 	return "FREE"
 }
 
+// precise returns Kiro's *WithPrecision value when sent, else the plain one.
+// The plain fields are rounded (e.g. currentUsage 0 vs currentUsageWithPrecision 0.05).
+func precise(withPrecision *float64, plain float64) float64 {
+	if withPrecision != nil {
+		return *withPrecision
+	}
+	return plain
+}
+
+// jsonNumberUnix reads a Unix-seconds timestamp that Kiro may send as an
+// integer or a float (bonuses use e.g. 1826021320.657). 0 when absent.
+func jsonNumberUnix(n json.Number) int64 {
+	if n == "" {
+		return 0
+	}
+	if ts, err := n.Int64(); err == nil {
+		return ts
+	}
+	if f, err := n.Float64(); err == nil {
+		return int64(f)
+	}
+	return 0
+}
+
 // 响应结构体
 type UsageLimitsResponse struct {
 	UsageBreakdownList []UsageBreakdown  `json:"usageBreakdownList"`
@@ -827,30 +866,37 @@ type UsageLimitsResponse struct {
 }
 
 type UsageBreakdown struct {
-	ResourceType  string         `json:"resourceType"`
-	CurrentUsage  float64        `json:"currentUsage"`
-	UsageLimit    float64        `json:"usageLimit"`
-	Currency      string         `json:"currency"`
-	Unit          string         `json:"unit"`
-	OverageRate   float64        `json:"overageRate"`
-	FreeTrialInfo *FreeTrialInfo `json:"freeTrialInfo"`
-	Bonuses       []BonusInfo    `json:"bonuses"`
+	ResourceType        string         `json:"resourceType"`
+	CurrentUsage        float64        `json:"currentUsage"`
+	CurrentUsagePrecise *float64       `json:"currentUsageWithPrecision"`
+	UsageLimit          float64        `json:"usageLimit"`
+	UsageLimitPrecise   *float64       `json:"usageLimitWithPrecision"`
+	Currency            string         `json:"currency"`
+	Unit                string         `json:"unit"`
+	OverageRate         float64        `json:"overageRate"`
+	FreeTrialInfo       *FreeTrialInfo `json:"freeTrialInfo"`
+	Bonuses             []BonusInfo    `json:"bonuses"`
 }
 
 type FreeTrialInfo struct {
-	CurrentUsage    float64     `json:"currentUsage"`
-	UsageLimit      float64     `json:"usageLimit"`
-	FreeTrialStatus string      `json:"freeTrialStatus"`
-	FreeTrialExpiry json.Number `json:"freeTrialExpiry"`
+	CurrentUsage        float64     `json:"currentUsage"`
+	CurrentUsagePrecise *float64    `json:"currentUsageWithPrecision"`
+	UsageLimit          float64     `json:"usageLimit"`
+	UsageLimitPrecise   *float64    `json:"usageLimitWithPrecision"`
+	FreeTrialStatus     string      `json:"freeTrialStatus"`
+	FreeTrialExpiry     json.Number `json:"freeTrialExpiry"`
 }
 
 type BonusInfo struct {
-	BonusCode    string      `json:"bonusCode"`
-	DisplayName  string      `json:"displayName"`
-	CurrentUsage float64     `json:"currentUsage"`
-	UsageLimit   float64     `json:"usageLimit"`
-	ExpiresAt    json.Number `json:"expiresAt"`
-	Status       string      `json:"status"`
+	BonusCode           string      `json:"bonusCode"`
+	BonusType           string      `json:"bonusType"`
+	DisplayName         string      `json:"displayName"`
+	CurrentUsage        float64     `json:"currentUsage"`
+	CurrentUsagePrecise *float64    `json:"currentUsageWithPrecision"`
+	UsageLimit          float64     `json:"usageLimit"`
+	UsageLimitPrecise   *float64    `json:"usageLimitWithPrecision"`
+	ExpiresAt           json.Number `json:"expiresAt"`
+	Status              string      `json:"status"`
 }
 
 type SubscriptionInfo struct {

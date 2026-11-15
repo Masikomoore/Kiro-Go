@@ -580,5 +580,14 @@
   "settings.proxyNameTaken": "Tên {0} đã tồn tại",
   "settings.proxyDeleteInUse": "Proxy này đang là proxy toàn cục. Hãy chuyển proxy toàn cục trước khi xóa.",
   "settings.proxyDeleteConfirm": "Xóa proxy {0}? Tài khoản dùng địa chỉ này vẫn giữ nguyên.",
-  "settings.proxyDeleted": "Đã xóa proxy"
+  "settings.proxyDeleted": "Đã xóa proxy",
+  "accounts.bonusCredits": "Tín dụng thưởng",
+  "accounts.boundToKeys": "Dành riêng cho API key: {0}",
+  "detail.bonusExpiry": "Hết hạn tín dụng thưởng",
+  "detail.apiKeys": "Gắn API key",
+  "detail.apiKeysHint": "Khi chọn, tài khoản này chỉ phục vụ các API key này; key khác sẽ không dùng nó. Bỏ chọn tất cả để dùng nhóm chung.",
+  "apiKeys.formAccounts": "Tài khoản dành riêng",
+  "apiKeys.formAccountsHint": "Khi chọn, key này chỉ dùng các tài khoản này và key khác không dùng chúng. Báo lỗi nếu không còn tài khoản nào khả dụng. Bỏ chọn tất cả để dùng nhóm chung.",
+  "apiKeys.boundAccounts": "Tài khoản dành riêng: {0}",
+  "apiKeys.sharedPool": "Tài khoản: nhóm chung"
 }

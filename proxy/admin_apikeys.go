@@ -9,18 +9,19 @@ import (
 // apiKeyView is the response payload for listing/inspecting API keys. The Key field
 // is masked so admins can identify entries without exposing the secret.
 type apiKeyView struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name,omitempty"`
-	KeyMasked     string  `json:"keyMasked"`
-	Enabled       bool    `json:"enabled"`
-	Migrated      bool    `json:"migrated,omitempty"`
-	CreatedAt     int64   `json:"createdAt"`
-	LastUsedAt    int64   `json:"lastUsedAt,omitempty"`
-	TokenLimit    int64   `json:"tokenLimit,omitempty"`
-	CreditLimit   float64 `json:"creditLimit,omitempty"`
-	TokensUsed    int64   `json:"tokensUsed"`
-	CreditsUsed   float64 `json:"creditsUsed"`
-	RequestsCount int64   `json:"requestsCount"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name,omitempty"`
+	KeyMasked     string   `json:"keyMasked"`
+	Enabled       bool     `json:"enabled"`
+	Migrated      bool     `json:"migrated,omitempty"`
+	CreatedAt     int64    `json:"createdAt"`
+	LastUsedAt    int64    `json:"lastUsedAt,omitempty"`
+	TokenLimit    int64    `json:"tokenLimit,omitempty"`
+	CreditLimit   float64  `json:"creditLimit,omitempty"`
+	TokensUsed    int64    `json:"tokensUsed"`
+	CreditsUsed   float64  `json:"creditsUsed"`
+	RequestsCount int64    `json:"requestsCount"`
+	AccountIDs    []string `json:"accountIds"`
 }
 
 func toApiKeyView(e config.ApiKeyEntry) apiKeyView {
@@ -37,6 +38,7 @@ func toApiKeyView(e config.ApiKeyEntry) apiKeyView {
 		TokensUsed:    e.TokensUsed,
 		CreditsUsed:   e.CreditsUsed,
 		RequestsCount: e.RequestsCount,
+		AccountIDs:    e.AccountIDs,
 	}
 }
 
@@ -60,11 +62,12 @@ func (h *Handler) apiGetApiKey(w http.ResponseWriter, r *http.Request, id string
 }
 
 type apiKeyCreateRequest struct {
-	Name        string  `json:"name,omitempty"`
-	Key         string  `json:"key,omitempty"`
-	Enabled     *bool   `json:"enabled,omitempty"`
-	TokenLimit  int64   `json:"tokenLimit,omitempty"`
-	CreditLimit float64 `json:"creditLimit,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Key         string   `json:"key,omitempty"`
+	Enabled     *bool    `json:"enabled,omitempty"`
+	TokenLimit  int64    `json:"tokenLimit,omitempty"`
+	CreditLimit float64  `json:"creditLimit,omitempty"`
+	AccountIDs  []string `json:"accountIds,omitempty"`
 }
 
 func (h *Handler) apiCreateApiKey(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +94,7 @@ func (h *Handler) apiCreateApiKey(w http.ResponseWriter, r *http.Request) {
 		Enabled:     enabled,
 		TokenLimit:  req.TokenLimit,
 		CreditLimit: req.CreditLimit,
+		AccountIDs:  req.AccountIDs,
 	})
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -108,11 +112,12 @@ func (h *Handler) apiCreateApiKey(w http.ResponseWriter, r *http.Request) {
 }
 
 type apiKeyUpdateRequest struct {
-	Name        *string  `json:"name,omitempty"`
-	Key         *string  `json:"key,omitempty"`
-	Enabled     *bool    `json:"enabled,omitempty"`
-	TokenLimit  *int64   `json:"tokenLimit,omitempty"`
-	CreditLimit *float64 `json:"creditLimit,omitempty"`
+	Name        *string   `json:"name,omitempty"`
+	Key         *string   `json:"key,omitempty"`
+	Enabled     *bool     `json:"enabled,omitempty"`
+	TokenLimit  *int64    `json:"tokenLimit,omitempty"`
+	CreditLimit *float64  `json:"creditLimit,omitempty"`
+	AccountIDs  *[]string `json:"accountIds,omitempty"`
 }
 
 func (h *Handler) apiUpdateApiKey(w http.ResponseWriter, r *http.Request, id string) {
@@ -145,6 +150,9 @@ func (h *Handler) apiUpdateApiKey(w http.ResponseWriter, r *http.Request, id str
 	}
 	if req.CreditLimit != nil {
 		patch.CreditLimit = *req.CreditLimit
+	}
+	if req.AccountIDs != nil {
+		patch.AccountIDs = *req.AccountIDs
 	}
 
 	if err := config.UpdateApiKey(id, patch); err != nil {

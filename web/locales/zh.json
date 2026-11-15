@@ -580,5 +580,14 @@
   "settings.proxyNameTaken": "名称 {0} 已存在",
   "settings.proxyDeleteInUse": "这个代理正作为全局代理使用，请先切换全局代理再删除",
   "settings.proxyDeleteConfirm": "确定删除代理 {0}？使用这个地址的账号不受影响。",
-  "settings.proxyDeleted": "代理已删除"
+  "settings.proxyDeleted": "代理已删除",
+  "accounts.bonusCredits": "奖励额度",
+  "accounts.boundToKeys": "专属于 API Key：{0}",
+  "detail.bonusExpiry": "奖励到期",
+  "detail.apiKeys": "API Key 绑定",
+  "detail.apiKeysHint": "勾选后本账号只给这些 API Key 使用，其他 Key 不会再调度到它。都不勾选＝公共账号池。",
+  "apiKeys.formAccounts": "专属账号",
+  "apiKeys.formAccountsHint": "勾选后此 Key 只使用这些账号，且这些账号不再给其他 Key 使用；全部不可用时直接报错。都不勾选＝使用公共账号池。",
+  "apiKeys.boundAccounts": "专属账号：{0} 个",
+  "apiKeys.sharedPool": "账号：公共池"
 }

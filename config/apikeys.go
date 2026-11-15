@@ -59,6 +59,7 @@ func AddApiKey(entry ApiKeyEntry) (ApiKeyEntry, error) {
 	if entry.CreatedAt == 0 {
 		entry.CreatedAt = time.Now().Unix()
 	}
+	entry.AccountIDs = normalizeIDs(entry.AccountIDs)
 	cfg.ApiKeys = append(cfg.ApiKeys, entry)
 	if err := saveLocked(); err != nil {
 		// Roll back the in-memory append so we don't leave inconsistent state.
@@ -70,7 +71,7 @@ func AddApiKey(entry ApiKeyEntry) (ApiKeyEntry, error) {
 
 // UpdateApiKey applies a patch to an existing API key. Patch semantics:
 //   - Name, Key are overwritten when non-empty in patch.
-//   - Enabled, TokenLimit, CreditLimit are always overwritten (zero values are valid).
+//   - Enabled, TokenLimit, CreditLimit, AccountIDs are always overwritten (zero values are valid).
 //   - Counters (TokensUsed/CreditsUsed/RequestsCount) are not touched here; use
 //     RecordApiKeyUsage or ResetApiKeyUsage instead.
 //   - Migrated stays as-is once true; only flips when explicitly set in patch.
@@ -106,6 +107,7 @@ func UpdateApiKey(id string, patch ApiKeyEntry) error {
 	cfg.ApiKeys[idx].Enabled = patch.Enabled
 	cfg.ApiKeys[idx].TokenLimit = patch.TokenLimit
 	cfg.ApiKeys[idx].CreditLimit = patch.CreditLimit
+	cfg.ApiKeys[idx].AccountIDs = normalizeIDs(patch.AccountIDs)
 	if patch.Migrated {
 		cfg.ApiKeys[idx].Migrated = true
 	}
@@ -230,4 +232,110 @@ func ApiKeyOverLimit(e ApiKeyEntry) (overToken bool, overCredit bool) {
 		overCredit = true
 	}
 	return
+}
+
+// normalizeIDs trims, drops empties and duplicates, keeping order.
+func normalizeIDs(ids []string) []string {
+	var out []string
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// ApiKeyIDsForAccount returns the IDs of the keys that bind accountID.
+func ApiKeyIDsForAccount(accountID string) []string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return nil
+	}
+	var out []string
+	for _, k := range cfg.ApiKeys {
+		for _, id := range k.AccountIDs {
+			if id == accountID {
+				out = append(out, k.ID)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// SetAccountApiKeys makes keyIDs exactly the set of keys that bind accountID:
+// the account is added to each listed key and removed from every other one.
+func SetAccountApiKeys(accountID string, keyIDs []string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg == nil {
+		return errors.New("config not initialized")
+	}
+	want := make(map[string]bool, len(keyIDs))
+	for _, id := range normalizeIDs(keyIDs) {
+		want[id] = true
+	}
+	found := 0
+	for i := range cfg.ApiKeys {
+		if want[cfg.ApiKeys[i].ID] {
+			found++
+		}
+	}
+	if found != len(want) {
+		return errors.New("api key not found")
+	}
+	for i := range cfg.ApiKeys {
+		k := &cfg.ApiKeys[i]
+		kept := make([]string, 0, len(k.AccountIDs)+1)
+		for _, id := range k.AccountIDs {
+			if id != accountID {
+				kept = append(kept, id)
+			}
+		}
+		if want[k.ID] {
+			kept = append(kept, accountID)
+		}
+		if len(kept) == 0 {
+			kept = nil
+		}
+		k.AccountIDs = kept
+	}
+	return saveLocked()
+}
+
+// ApiKeyAccountFilter reports which accounts the key keyID may use. A key
+// with bound accounts uses only those; any other key (or keyID "") uses only
+// accounts that no key binds. It returns nil when no key binds any account,
+// meaning every account is allowed.
+func ApiKeyAccountFilter(keyID string) func(accountID string) bool {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return nil
+	}
+	var own map[string]bool
+	reserved := make(map[string]bool)
+	for _, k := range cfg.ApiKeys {
+		for _, id := range k.AccountIDs {
+			reserved[id] = true
+		}
+		if keyID != "" && k.ID == keyID && len(k.AccountIDs) > 0 {
+			own = make(map[string]bool, len(k.AccountIDs))
+			for _, id := range k.AccountIDs {
+				own[id] = true
+			}
+		}
+	}
+	if own != nil {
+		return func(accountID string) bool { return own[accountID] }
+	}
+	if len(reserved) == 0 {
+		return nil
+	}
+	return func(accountID string) bool { return !reserved[accountID] }
 }

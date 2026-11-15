@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"io"
 	"kiro-go/auth"
 	"kiro-go/config"
@@ -613,4 +614,58 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
+}
+
+func TestUsageLimitsBonusesDecode(t *testing.T) {
+	// Shape seen from getUsageLimits for a first-upgrade Pro+ account (2026-11).
+	raw := `{"usageBreakdownList":[{"bonuses":[{"bonusCode":"c#0","bonusType":"FIRST_UPGRADE_TRIAL","currentUsage":3.5,"description":"Trial credits from your first upgrade","displayName":"Trial credits","expiresAt":1826021320.657,"redeemedAt":1794485348.969,"status":"ACTIVE","usageLimit":500}],"currentUsage":0,"freeTrialInfo":null,"usageLimit":1234}]}`
+	var u UsageLimitsResponse
+	if err := json.Unmarshal([]byte(raw), &u); err != nil {
+		t.Fatal(err)
+	}
+	b := u.UsageBreakdownList[0].Bonuses[0]
+	if b.BonusType != "FIRST_UPGRADE_TRIAL" || b.UsageLimit != 500 || b.CurrentUsage != 3.5 {
+		t.Fatalf("decoded %+v", b)
+	}
+	if got := jsonNumberUnix(b.ExpiresAt); got != 1826021320 {
+		t.Fatalf("expiresAt = %d", got)
+	}
+}
+
+// Kiro rounds the plain usage fields; *WithPrecision carries the real value.
+func TestUsageLimitsPreferWithPrecision(t *testing.T) {
+	raw := `{"usageBreakdownList":[{"currentUsage":0,"currentUsageWithPrecision":0.05,"usageLimit":1234,"usageLimitWithPrecision":1234,
+		"freeTrialInfo":{"currentUsage":12,"currentUsageWithPrecision":12.37,"usageLimit":500},
+		"bonuses":[{"currentUsage":3,"usageLimit":500,"status":"ACTIVE"}]}]}`
+	var u UsageLimitsResponse
+	if err := json.Unmarshal([]byte(raw), &u); err != nil {
+		t.Fatal(err)
+	}
+	bd := u.UsageBreakdownList[0]
+	if got := precise(bd.CurrentUsagePrecise, bd.CurrentUsage); got != 0.05 {
+		t.Errorf("plan current = %v, want 0.05", got)
+	}
+	if got := precise(bd.FreeTrialInfo.CurrentUsagePrecise, bd.FreeTrialInfo.CurrentUsage); got != 12.37 {
+		t.Errorf("trial current = %v, want 12.37", got)
+	}
+	// Absent precision field falls back to the plain one.
+	if got := precise(bd.FreeTrialInfo.UsageLimitPrecise, bd.FreeTrialInfo.UsageLimit); got != 500 {
+		t.Errorf("trial limit = %v, want 500", got)
+	}
+	if got := precise(bd.Bonuses[0].CurrentUsagePrecise, bd.Bonuses[0].CurrentUsage); got != 3 {
+		t.Errorf("bonus current = %v, want 3", got)
+	}
+	// A precise 0 wins over a rounded-up plain value.
+	zero := 0.0
+	if got := precise(&zero, 1); got != 0 {
+		t.Errorf("precise zero = %v", got)
+	}
+
+	var o upstreamOverageResponse
+	if err := json.Unmarshal([]byte(`{"usageBreakdownList":[{"currentOverages":1,"currentOveragesWithPrecision":0.84,"overageCap":10000,"overageCapWithPrecision":10000}]}`), &o); err != nil {
+		t.Fatal(err)
+	}
+	if got := precise(o.UsageBreakdownList[0].CurrentOveragesPrecise, o.UsageBreakdownList[0].CurrentOverages); got != 0.84 {
+		t.Errorf("overages = %v, want 0.84", got)
+	}
 }

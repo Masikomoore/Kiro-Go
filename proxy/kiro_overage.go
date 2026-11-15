@@ -39,10 +39,12 @@ type upstreamOverageResponse struct {
 		SubscriptionTitle string `json:"subscriptionTitle"`
 	} `json:"subscriptionInfo"`
 	UsageBreakdownList []struct {
-		ResourceType    string  `json:"resourceType"`
-		OverageCap      float64 `json:"overageCap"`
-		OverageRate     float64 `json:"overageRate"`
-		CurrentOverages float64 `json:"currentOverages"`
+		ResourceType           string   `json:"resourceType"`
+		OverageCap             float64  `json:"overageCap"`
+		OverageCapPrecise      *float64 `json:"overageCapWithPrecision"`
+		OverageRate            float64  `json:"overageRate"`
+		CurrentOverages        float64  `json:"currentOverages"`
+		CurrentOveragesPrecise *float64 `json:"currentOveragesWithPrecision"`
 	} `json:"usageBreakdownList"`
 }
 
@@ -98,10 +100,12 @@ func FetchOverageStatus(account *config.Account) (*OverageSnapshot, error) {
 		snap.SubscriptionTitle = parsed.SubscriptionInfo.SubscriptionTitle
 	}
 	for _, bd := range parsed.UsageBreakdownList {
-		if bd.OverageCap > 0 || bd.OverageRate > 0 || bd.CurrentOverages > 0 {
-			snap.OverageCap = bd.OverageCap
+		overageCap := precise(bd.OverageCapPrecise, bd.OverageCap)
+		currentOverages := precise(bd.CurrentOveragesPrecise, bd.CurrentOverages)
+		if overageCap > 0 || bd.OverageRate > 0 || currentOverages > 0 {
+			snap.OverageCap = overageCap
 			snap.OverageRate = bd.OverageRate
-			snap.CurrentOverages = bd.CurrentOverages
+			snap.CurrentOverages = currentOverages
 			break
 		}
 	}

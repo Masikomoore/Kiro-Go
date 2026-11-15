@@ -120,10 +120,31 @@ func accountAffinityKeyFrom(ctx context.Context) string {
 	return key
 }
 
+// excludeForApiKey adds to excluded the accounts the API key may not use (see
+// config.ApiKeyAccountFilter). It returns a copy and leaves the caller's map,
+// which tracks failed accounts, untouched.
+func (h *Handler) excludeForApiKey(apiKeyID string, excluded map[string]bool) map[string]bool {
+	allowed := config.ApiKeyAccountFilter(apiKeyID)
+	if allowed == nil {
+		return excluded
+	}
+	out := make(map[string]bool, len(excluded))
+	for id, v := range excluded {
+		out[id] = v
+	}
+	for _, id := range h.pool.AccountIDs() {
+		if !allowed(id) {
+			out[id] = true
+		}
+	}
+	return out
+}
+
 // nextAccount picks the upstream account for one attempt under
 // compat.schedulingMode. In sticky mode with a conversation key in ctx, the
 // conversation's previous account is reused while it is ready.
 func (h *Handler) nextAccount(ctx context.Context, model string, excluded map[string]bool) *config.Account {
+	excluded = h.excludeForApiKey(apiKeyIDFromContext(ctx), excluded)
 	switch config.GetCompatConfig().SchedulingMode {
 	case config.SchedulingPriority:
 		return h.pool.GetFirstForModelExcluding(model, excluded)

@@ -673,6 +673,17 @@ func (p *AccountPool) UpdateStats(id string, tokens int, credits float64) {
 	}
 }
 
+// AccountIDs returns the IDs of the accounts in the pool.
+func (p *AccountPool) AccountIDs() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	ids := make([]string, len(p.accounts))
+	for i := range p.accounts {
+		ids[i] = p.accounts[i].ID
+	}
+	return ids
+}
+
 // GetAllAccounts 获取所有账号副本
 func (p *AccountPool) GetAllAccounts() []config.Account {
 	p.mu.RLock()
@@ -682,8 +693,11 @@ func (p *AccountPool) GetAllAccounts() []config.Account {
 	return result
 }
 
+// isOverUsageLimit reports whether the plan credits are spent and no trial or
+// bonus credits are left; Kiro spends those after the plan credits.
 func isOverUsageLimit(acc config.Account) bool {
-	return acc.UsageLimit > 0 && acc.UsageCurrent >= acc.UsageLimit
+	return acc.UsageLimit > 0 && acc.UsageCurrent >= acc.UsageLimit &&
+		acc.ExtraCreditsRemaining(time.Now().Unix()) <= 0
 }
 
 // isQuotaBlocked reports whether an over-quota account should be skipped:

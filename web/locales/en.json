@@ -580,5 +580,14 @@
   "settings.proxyNameTaken": "Name {0} is already used",
   "settings.proxyDeleteInUse": "This proxy is the global proxy. Switch the global proxy before deleting it.",
   "settings.proxyDeleteConfirm": "Delete proxy {0}? Accounts that use this address keep it.",
-  "settings.proxyDeleted": "Proxy deleted"
+  "settings.proxyDeleted": "Proxy deleted",
+  "accounts.bonusCredits": "Bonus credits",
+  "accounts.boundToKeys": "Reserved for API key: {0}",
+  "detail.bonusExpiry": "Bonus expiry",
+  "detail.apiKeys": "API key binding",
+  "detail.apiKeysHint": "When checked, this account serves only these API keys; no other key is routed to it. Leave all unchecked for the shared pool.",
+  "apiKeys.formAccounts": "Dedicated accounts",
+  "apiKeys.formAccountsHint": "When checked, this key uses only these accounts, and no other key uses them. Requests fail if none is available. Leave all unchecked to use the shared pool.",
+  "apiKeys.boundAccounts": "Dedicated accounts: {0}",
+  "apiKeys.sharedPool": "Accounts: shared pool"
 }

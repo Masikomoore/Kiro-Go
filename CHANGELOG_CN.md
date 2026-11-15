@@ -5,6 +5,17 @@
 
 ## 未发布
 
+### 账号与 API Key
+- **API Key 可以绑定专属账号**：创建/编辑 Key 时勾选账号，或在账号详情里勾选所属 Key。绑定了账号的 Key 只用这些
+  账号，全部不可用时直接报错，不借用公共池；其他 Key（包括没绑定账号的 Key）都不会用到它们。没被任何 Key 绑定
+  的账号仍是公共池。联网搜索选账号也遵守这条规则。
+- **显示并使用 Trial credits**：2026-11-01 起首次升级付费套餐赠送 500 Trial credits（12 个月），`getUsageLimits`
+  把它放在 `bonuses` 里（`bonusType: FIRST_UPGRADE_TRIAL`），不在 `freeTrialInfo`。现在会保存，在账号卡片单独显示
+  用量条、在详情里显示，分组剩余额度也算进去。Kiro 先扣套餐额度再扣这部分，所以套餐额度用完但还有 trial/奖励
+  额度的账号会继续调度（之前会被跳过）。
+- **用量数字改用 Kiro 的 `*WithPrecision` 字段**（套餐、免费试用、奖励、超额），没有时才用普通字段；普通字段是
+  取整的（如 `currentUsage` 0 对 `currentUsageWithPrecision` 0.05）。
+
 ### 计费与提示缓存
 - **系统提示词末尾每轮变化，不再导致每轮都冷启动**（`d78085b`，`compat.stableSystemPrompt`，默认开）：客户端的系统
   提示词和上一轮只在最后几 KB 不同时，共同的前缀留在历史第 0 条和会话 ID 里，变化的末尾随当前消息发送。之前有个

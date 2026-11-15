@@ -394,3 +394,37 @@ func TestGetFirstForModelExcludingKeepsConfigOrder(t *testing.T) {
 		t.Fatalf("expected b after excluding a, got %v", got)
 	}
 }
+
+// Kiro spends plan credits, then trial/bonus credits (FIRST_UPGRADE_TRIAL
+// since 2026-11-01). An account with plan credits spent but trial credits left
+// must stay routable.
+func TestOverLimitAccountWithTrialCreditsLeftIsSelectable(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour).Unix()
+	past := time.Now().Add(-time.Hour).Unix()
+	cases := []struct {
+		name    string
+		bonuses []config.BonusCredit
+		want    bool
+	}{
+		{"active trial left", []config.BonusCredit{{Type: "FIRST_UPGRADE_TRIAL", Status: "ACTIVE", Limit: 500, Current: 10, ExpiresAt: future}}, true},
+		{"trial spent", []config.BonusCredit{{Status: "ACTIVE", Limit: 500, Current: 500, ExpiresAt: future}}, false},
+		{"trial expired", []config.BonusCredit{{Status: "ACTIVE", Limit: 500, ExpiresAt: past}}, false},
+		{"trial inactive", []config.BonusCredit{{Status: "EXPIRED", Limit: 500, ExpiresAt: future}}, false},
+		{"no expiry", []config.BonusCredit{{Status: "ACTIVE", Limit: 500}}, true},
+	}
+	for _, c := range cases {
+		p := &AccountPool{}
+		p.accounts = []config.Account{{ID: "over", UsageCurrent: 1000, UsageLimit: 1000, Bonuses: c.bonuses}}
+		got := p.GetNext() != nil
+		if got != c.want {
+			t.Errorf("%s: selectable=%v, want %v", c.name, got, c.want)
+		}
+	}
+
+	// The legacy freeTrialInfo counts the same way.
+	p := &AccountPool{}
+	p.accounts = []config.Account{{ID: "over", UsageCurrent: 50, UsageLimit: 50, TrialStatus: "ACTIVE", TrialUsageLimit: 500, TrialUsageCurrent: 1, TrialExpiresAt: future}}
+	if p.GetNext() == nil {
+		t.Error("account with an active legacy free trial was skipped")
+	}
+}

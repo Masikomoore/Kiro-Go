@@ -5,6 +5,19 @@ All notable changes of this fork ([Masikomoore/Kiro-Go](https://github.com/Masik
 
 ## Unreleased
 
+### Accounts and API keys
+- **API keys can own accounts.** Tick accounts when creating or editing a key, or tick keys in an account's details.
+  A key with accounts uses only those and fails instead of borrowing from the shared pool; no other key (including
+  keys without accounts) uses them. Accounts no key owns stay in the shared pool. web_search account picks follow the
+  same rule.
+- **Trial credits are shown and used.** Since 2026-11-01 a first paid upgrade grants 500 "Trial credits" (12 months),
+  which `getUsageLimits` returns under `bonuses` (`bonusType: FIRST_UPGRADE_TRIAL`), not `freeTrialInfo`. They are
+  now stored, shown as their own usage bar and in account details, and counted in group totals. Kiro spends plan
+  credits first, then these, so an account whose plan credits are used up stays routable while trial or bonus
+  credits remain (it used to be skipped).
+- **Usage numbers use Kiro's `*WithPrecision` fields** (plan, free trial, bonuses, overages) when sent; the plain
+  fields are rounded (e.g. `currentUsage` 0 vs `currentUsageWithPrecision` 0.05).
+
 ### Billing and prompt cache
 - **Changing system-prompt tail no longer starts a cold conversation every turn** (`d78085b`,
   `compat.stableSystemPrompt`, default on). When a client's system prompt differs from its previous one only in the
