@@ -38,9 +38,10 @@ func extractProvidedKey(r *http.Request) string {
 
 // authenticate validates an incoming request against the configured API keys.
 //
-// Master switch: config.RequireApiKey. When false, requests pass without checking
-// any keys, even if entries exist (so the admin UI can hold draft keys without
-// affecting public deployments).
+// Master switch: config.RequireApiKey. When false, no request is rejected, even
+// if entries exist (so the admin UI can hold draft keys without affecting
+// public deployments); a provided key that matches an enabled entry is still
+// returned, so its usage is counted and its dedicated accounts apply.
 //
 // When RequireApiKey is true:
 //  1. If ApiKeys is non-empty, the provided key MUST match an enabled, in-quota
@@ -54,6 +55,11 @@ func extractProvidedKey(r *http.Request) string {
 // is used or when the master switch is off.
 func (h *Handler) authenticate(r *http.Request) (*config.ApiKeyEntry, error) {
 	if !config.IsApiKeyRequired() {
+		// Nothing is rejected, but a known enabled key is still identified so
+		// its usage is counted and its dedicated accounts apply.
+		if entry := config.FindApiKeyByValue(extractProvidedKey(r)); entry != nil && entry.Enabled {
+			return entry, nil
+		}
 		return nil, nil
 	}
 

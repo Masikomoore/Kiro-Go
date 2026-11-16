@@ -9,7 +9,8 @@ All notable changes of this fork ([Masikomoore/Kiro-Go](https://github.com/Masik
 - **API keys can own accounts.** Tick accounts when creating or editing a key, or tick keys in an account's details.
   A key with accounts uses only those and fails instead of borrowing from the shared pool; no other key (including
   keys without accounts) uses them. Accounts no key owns stay in the shared pool. web_search account picks follow the
-  same rule.
+  same rule. A known key is recognised even when `requireApiKey` is off (nothing is rejected then; unknown or missing
+  keys still go to the shared pool), so bindings work on open deployments.
 - **Trial credits are shown and used.** Since 2026-11-01 a first paid upgrade grants 500 "Trial credits" (12 months),
   which `getUsageLimits` returns under `bonuses` (`bonusType: FIRST_UPGRADE_TRIAL`), not `freeTrialInfo`. They are
   now stored, shown as their own usage bar and in account details, and counted in group totals. Kiro spends plan

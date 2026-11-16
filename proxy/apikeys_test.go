@@ -324,7 +324,11 @@ func TestAuthenticateMasterSwitchOffPassesThrough(t *testing.T) {
 		t.Fatalf("expected open access without entry, got entry=%v err=%v", entry, err)
 	}
 	if entry, err := h.authenticate(newAuthTestRequest(t, "Authorization", "Bearer sk-anything")); err != nil || entry != nil {
-		t.Fatalf("expected provided key to be ignored when gate is off, got entry=%v err=%v", entry, err)
+		t.Fatalf("expected unknown key to pass anonymously when gate is off, got entry=%v err=%v", entry, err)
+	}
+	// A known key is still identified, so its usage and dedicated accounts apply.
+	if entry, err := h.authenticate(newAuthTestRequest(t, "X-Api-Key", "sk-drafted")); err != nil || entry == nil || entry.Name != "drafted" {
+		t.Fatalf("expected known key to be identified when gate is off, got entry=%v err=%v", entry, err)
 	}
 }
 
